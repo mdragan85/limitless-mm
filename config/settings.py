@@ -5,7 +5,7 @@ Reads settings from environment variables and provides defaults.
 
 import os
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
@@ -26,9 +26,11 @@ class LimitlessConfig:
     POLL_INTERVAL: float = float(os.getenv("LIMITLESS_POLL_INTERVAL", "2.0"))
 
     # Which underlyings to log
-    UNDERLYINGS: list[str] = os.getenv(
-        "LIMITLESS_UNDERLYINGS", "BTC,ETH,SOL,XRP"
-    ).split(",")
+    UNDERLYINGS: list[str] = field(
+        default_factory=lambda: os.getenv(
+            "LIMITLESS_UNDERLYINGS", "BTC,ETH,SOL,XRP"
+        ).split(",")
+    )
 
     # Max number of markets per underlying to log
     MAX_MARKETS_PER_UNDERLYING: int = int(
