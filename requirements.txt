@@ -1,4 +1,3 @@
-requests
-websockets
-pydantic
-python-dotenv
+httpx>=0.24.0
+pandas>=2.0.0
+python-dotenv>=1.0.0
