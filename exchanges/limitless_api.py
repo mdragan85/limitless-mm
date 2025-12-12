@@ -76,20 +76,21 @@ class LimitlessAPI:
     # -------------------------
     # Orderbook endpoints
     # -------------------------
-def get_orderbook(self, slug: str) -> Dict[str, Any]:
-    """Return the current orderbook for a market identified by its slug."""
-    if not slug:
-        raise ValueError("Market slug is required for orderbook requests")
-    return self._get(f"markets/{slug}/orderbook")
 
-    # -------------------------
-    # Cleanup
-    # -------------------------
-    def close(self):
-        self.client.close()
+    def get_orderbook(self, slug: str) -> Dict[str, Any]:
+        """Return the current orderbook for a market identified by its slug."""
+        if not slug:
+            raise ValueError("Market slug is required for orderbook requests")
+        return self._get(f"markets/{slug}/orderbook")
 
-    def __enter__(self):
-        return self
+        # -------------------------
+        # Cleanup
+        # -------------------------
+        def close(self):
+            self.client.close()
 
-    def __exit__(self, exc_type, exc, tb):
-        self.close()
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.close()
