@@ -79,11 +79,17 @@ class LimitlessAPI:
     # -------------------------
     # Orderbook endpoints
     # -------------------------
-    def get_orderbook(self, market_id: str) -> Dict[str, Any]:
+    def get_orderbook(self, slug: str) -> dict:
         """
-        Returns the best bids/asks and depth for the given market.
+        Fetch the current orderbook for a market.
+
+        The Limitless Trading API expects a *slug* here, e.g.
+        'btc-price-prediction-2024', not the numeric market id.
         """
-        return self._get(f"markets/{market_id}/orderbook")
+        if not slug:
+            raise ValueError("Market slug is required for orderbook requests")
+
+        return self._get(f"markets/{slug}/orderbook")
 
     # -------------------------
     # Cleanup
