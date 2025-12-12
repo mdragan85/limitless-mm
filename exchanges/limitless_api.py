@@ -42,31 +42,28 @@ class LimitlessAPI:
     # Market endpoints
     # -------------------------
     def list_markets(self, underlying: str | None = None) -> list[dict]:
-        # 1) Hit the endpoint
-        payload = self._get("markets/active")
+        """Return a list of active markets, optionally filtered by underlying ticker."""
+        payload = self._get("markets/active")  # returns BrowseActiveMarketsResponseDto
 
-        # 2) Normalize shape – API returns {"data": [...], "totalMarketsCount": ...}
+        # Unwrap the actual list of markets from the response
         if isinstance(payload, dict):
             raw = payload.get("data", []) or []
         else:
             raw = payload or []
 
-        # 3) No underlying filter? Just return the raw list
-        if not underlying:
-            return raw
+        if underlying:
+            u = underlying.upper()
+            filtered: list[dict] = []
+            for m in raw:
+                if not isinstance(m, dict):
+                    continue
+                ticker = (m.get("ticker") or "").upper()
+                title = (m.get("title") or "").upper()
+                if ticker.startswith(u) or u in title:
+                    filtered.append(m)
+            raw = filtered
 
-        # 4) Filter by underlying (defensively)
-        u = underlying.upper()
-        filtered: list[dict] = []
-        for m in raw:
-            if not isinstance(m, dict):
-                continue
-            ticker = (m.get("ticker") or "").upper()
-            title = (m.get("title") or "").upper()
-            if ticker.startswith(u) or u in title:
-                filtered.append(m)
-
-        return filtered
+        return raw
 
 
 
@@ -79,17 +76,11 @@ class LimitlessAPI:
     # -------------------------
     # Orderbook endpoints
     # -------------------------
-    def get_orderbook(self, slug: str) -> dict:
-        """
-        Fetch the current orderbook for a market.
-
-        The Limitless Trading API expects a *slug* here, e.g.
-        'btc-price-prediction-2024', not the numeric market id.
-        """
-        if not slug:
-            raise ValueError("Market slug is required for orderbook requests")
-
-        return self._get(f"markets/{slug}/orderbook")
+def get_orderbook(self, slug: str) -> Dict[str, Any]:
+    """Return the current orderbook for a market identified by its slug."""
+    if not slug:
+        raise ValueError("Market slug is required for orderbook requests")
+    return self._get(f"markets/{slug}/orderbook")
 
     # -------------------------
     # Cleanup
