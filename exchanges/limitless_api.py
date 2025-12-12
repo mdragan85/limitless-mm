@@ -45,7 +45,7 @@ class LimitlessAPI:
         # 1) Hit the endpoint
         payload = self._get("markets/active")
 
-        # 2) Normalize shape – handle {"data": [...], "totalMarketsCount": ...}
+        # 2) Normalize shape – API returns {"data": [...], "totalMarketsCount": ...}
         if isinstance(payload, dict):
             raw = payload.get("data", []) or []
         else:
@@ -55,12 +55,11 @@ class LimitlessAPI:
         if not underlying:
             return raw
 
-        # 4) Filter by underlying (defensively assume we get dicts)
+        # 4) Filter by underlying (defensively)
         u = underlying.upper()
         filtered: list[dict] = []
         for m in raw:
             if not isinstance(m, dict):
-                # unexpected shape, skip it instead of crashing
                 continue
             ticker = (m.get("ticker") or "").upper()
             title = (m.get("title") or "").upper()
@@ -68,6 +67,7 @@ class LimitlessAPI:
                 filtered.append(m)
 
         return filtered
+
 
 
     def get_market(self, market_id: str) -> Dict[str, Any]:
