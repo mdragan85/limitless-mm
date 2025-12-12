@@ -51,14 +51,17 @@ class MarketLogger:
     # Logging a single snapshot
     # -------------------------
     def log_snapshot(self, market: LimitlessMarket):
-        """
-        Fetch orderbook snapshot, timestamp it, and write to disk.
-        One JSON line per snapshot.
-        """
+        """Fetch orderbook snapshot, timestamp it, and write to disk."""
+        # Prefer slug from raw payload; required by /markets/{slug}/orderbook
+        slug = market.raw.get("slug")
+        if not slug:
+            print(f"[WARN] No slug found for market {market.market_id}, skipping")
+            return
+
         try:
-            snapshot = self.api.get_orderbook(market.market_id)
+            snapshot = self.api.get_orderbook(slug)
         except Exception as exc:
-            print(f"[WARN] Failed to fetch orderbook for {market.market_id}: {exc}")
+            print(f"[WARN] Failed to fetch orderbook for {market.market_id} ({slug}): {exc}")
             return
 
         record = {
@@ -66,10 +69,9 @@ class MarketLogger:
             "market_id": market.market_id,
             "underlying": market.underlying,
             "title": market.title,
+            "slug": slug,
             "snapshot": snapshot,
         }
-
-        # Write to underlying-specific file
         file_path = self.out_dir / f"{market.underlying}_orderbooks.jsonl"
         with open(file_path, "a") as f:
             f.write(json.dumps(record) + "\n")
