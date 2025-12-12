@@ -42,20 +42,33 @@ class LimitlessAPI:
     # Market endpoints
     # -------------------------
     def list_markets(self, underlying: str | None = None) -> list[dict]:
-        # 1) Hit a real endpoint
-        raw = self._get("markets/active")  # no params for now
+        # 1) Hit the endpoint
+        payload = self._get("markets/active")
 
-        # 2) If you want BTC-only, filter locally
-        if underlying:
-            u = underlying.upper()
-            # You may need to tweak this once you see the actual response shape
-            raw = [
-                m for m in raw
-                if (m.get("ticker") or "").upper().startswith(u)
-                or u in (m.get("title") or "").upper()
-            ]
+        # 2) Normalize shape – handle {"data": [...], "totalMarketsCount": ...}
+        if isinstance(payload, dict):
+            raw = payload.get("data", []) or []
+        else:
+            raw = payload or []
 
-        return raw
+        # 3) No underlying filter? Just return the raw list
+        if not underlying:
+            return raw
+
+        # 4) Filter by underlying (defensively assume we get dicts)
+        u = underlying.upper()
+        filtered: list[dict] = []
+        for m in raw:
+            if not isinstance(m, dict):
+                # unexpected shape, skip it instead of crashing
+                continue
+            ticker = (m.get("ticker") or "").upper()
+            title = (m.get("title") or "").upper()
+            if ticker.startswith(u) or u in title:
+                filtered.append(m)
+
+        return filtered
+
 
     def get_market(self, market_id: str) -> Dict[str, Any]:
         """
