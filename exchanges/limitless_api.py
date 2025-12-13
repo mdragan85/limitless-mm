@@ -3,6 +3,7 @@ Limitless REST API client.
 Provides market discovery and orderbook snapshot retrieval.
 """
 
+import requests
 from typing import Any, Dict, List, Optional
 import httpx
 
