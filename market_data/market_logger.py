@@ -34,16 +34,18 @@ class MarketLogger:
         """
         raw_list = self.api.list_markets(underlying)
 
-        # Inject the underlying symbol so LimitlessMarket sees it
+        # inject the underlying symbol so LimitlessMarket sees it
         markets = [
-            LimitlessMarket.from_api(m)
+            LimitlessMarket.from_api({**m, "underlying": underlying})
             for m in raw_list
         ]
 
-        # TEMPORARY: do not filter until we define proper rules
-        loggable = markets
-
-        return loggable[: settings.MAX_MARKETS_PER_UNDERLYING]
+        # Filter out expired or inactive markets
+        loggable = [m for m in markets if m.is_loggable()]
+        # Keep only the first N if configured
+        if settings.MAX_MARKETS_PER_UNDERLYING:
+            return loggable[: settings.MAX_MARKETS_PER_UNDERLYING]
+        return loggable
 
 
     # -------------------------
