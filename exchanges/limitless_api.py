@@ -81,7 +81,7 @@ class LimitlessAPI:
         """Return the current orderbook for a market identified by its slug."""
         if not slug:
             raise ValueError("Market slug is required for orderbook requests")
-        return self._get(f"markets/{slug}/orderbook")
+        return self._get(f"markets/{slug}/orderbook", params=params)
 
         # -------------------------
         # Cleanup

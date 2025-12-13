@@ -11,7 +11,7 @@ from typing import List
 
 from config.settings import settings
 from exchanges.limitless_api import LimitlessAPI
-from market_data.market_definitions import LimitlessMarket
+from exchanges.limitless_market import LimitlessMarket
 
 
 class MarketLogger:
@@ -36,7 +36,7 @@ class MarketLogger:
 
         # Inject the underlying symbol so LimitlessMarket sees it
         markets = [
-            LimitlessMarket.from_api({**m, "underlying": underlying})
+            LimitlessMarket.from_api(m)
             for m in raw_list
         ]
 
@@ -58,20 +58,25 @@ class MarketLogger:
             print(f"[WARN] No slug found for market {market.market_id}, skipping")
             return
 
+        # Fetch BOTH orderbooks
         try:
-            snapshot = self.api.get_orderbook(slug)
+            yes_book = self.api.get_orderbook(market.slug, market.yes_token)
+            no_book  = self.api.get_orderbook(market.slug, market.no_token)
         except Exception as exc:
-            print(f"[WARN] Failed to fetch orderbook for {market.market_id} ({slug}): {exc}")
+            print(f"[WARN] Failed to fetch orderbooks for {market.market_id}/{market.slug}: {exc}")
             return
 
+        # Log them together
         record = {
             "timestamp": datetime.utcnow().isoformat(),
             "market_id": market.market_id,
+            "slug": market.slug,
             "underlying": market.underlying,
             "title": market.title,
-            "slug": slug,
-            "snapshot": snapshot,
+            "yes_orderbook": yes_book,
+            "no_orderbook":  no_book,
         }
+
         file_path = self.out_dir / f"{market.underlying}_orderbooks.jsonl"
         with open(file_path, "a") as f:
             f.write(json.dumps(record) + "\n")
