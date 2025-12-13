@@ -21,10 +21,15 @@ class LimitlessAPI:
     def __init__(self):
         self.base_url = "https://api.limitless.exchange"
         self.session = requests.Session()          # <-- REQUIRED
-        self._headers = {
+        
+        # Build headers dynamically based on whether API key exists
+        headers = {
             "accept": "application/json",
-            "Authorization": f"Bearer {settings.LIMITLESS_API_KEY}"
         }
+        if getattr(settings, "LIMITLESS_API_KEY", None):
+            headers["Authorization"] = f"Bearer {settings.LIMITLESS_API_KEY}"
+
+        self._headers = headers
 
     # -------------------------
     # Low-level request helper
