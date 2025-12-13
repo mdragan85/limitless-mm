@@ -88,13 +88,15 @@ class LimitlessAPI:
     # Orderbook endpoints
     # -------------------------
 
-    def get_orderbook(self, slug: str, token_id: str) -> dict:
+
+    def get_orderbook(self, slug: str) -> dict:
         """
-        Fetch orderbook for a specific market outcome (YES or NO).
-        Limitless requires a tokenId query parameter to choose the outcome.
+        Fetch the current orderbook for a market.
+
+        The Limitless API returns a single orderbook per market when
+        you hit /markets/{slug}/orderbook.
         """
-        params = {"tokenId": token_id}
-        return self._get(f"markets/{slug}/orderbook", params=params)
+        return self._get(f"markets/{slug}/orderbook")
 
     # -------------------------
     # Cleanup

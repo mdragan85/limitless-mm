@@ -51,17 +51,14 @@ class MarketLogger:
     # -------------------------
     def log_snapshot(self, market: LimitlessMarket) -> None:
         """
-        Fetch orderbook snapshot for a single Limitless market, timestamp it,
-        and append it as one JSON line to the appropriate log file.
-        Currently we log the same book under both 'yes_orderbook' and
-        'no_orderbook' until the API wrapper exposes separate YES/NO tokens.
+        Fetch a single orderbook snapshot for a Limitless market and
+        append it as one JSON line to the per-underlying log file.
         """
         try:
-            # IMPORTANT: use slug, not numeric id (id endpoint 404s)
             orderbook = self.api.get_orderbook(market.slug)
         except Exception as exc:
             print(
-                f"[WARN] Failed to fetch orderbooks for "
+                f"[WARN] Failed to fetch orderbook for "
                 f"{market.market_id}/{market.slug}: {exc}"
             )
             return
@@ -72,14 +69,14 @@ class MarketLogger:
             "slug": market.slug,
             "underlying": market.underlying,
             "title": market.title,
-            # For now YES and NO share the same underlying orderbook snapshot.
-            "yes_orderbook": orderbook,
-            "no_orderbook": orderbook,
+            "orderbook": orderbook,
         }
 
-        # Write to underlying-specific file, e.g. BTC_orderbooks.jsonl
-        file_path = self.out_dir / f"{market.underlying}_orderbooks.jsonl"
-        with open(file_path, "a", encoding="utf-8") as f:
+        # Use underlying symbol in filename; fall back to UNKNOWN if empty
+        underlying = market.underlying or "UNKNOWN"
+        file_path = self.out_dir / f"{underlying}_orderbooks.jsonl"
+
+        with file_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
 
     # -------------------------
