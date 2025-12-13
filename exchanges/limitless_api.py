@@ -21,7 +21,7 @@ class LimitlessAPI:
     def __init__(self):
         self.base_url = "https://api.limitless.exchange"
         self.session = requests.Session()          # <-- REQUIRED
-        
+
         # Build headers dynamically based on whether API key exists
         headers = {
             "accept": "application/json",
@@ -39,14 +39,15 @@ class LimitlessAPI:
         resp = self.session.get(url, headers=self._headers, params=params)
 
         try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
+            resp.raise_for_status()
+        except requests.exceptions.HTTPError as exc:
+            # Attach status code if we have a response
+            status = exc.response.status_code if exc.response is not None else "N/A"
             raise RuntimeError(
-                f"Limitless API request failed [{exc.response.status_code}] "
-                f"for URL: {url}"
+                f"Limitless API request failed [{status}] for URL: {url}"
             ) from exc
 
-        return response.json()
+        return resp.json()
 
     # -------------------------
     # Market endpoints
