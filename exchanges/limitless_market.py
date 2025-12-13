@@ -29,3 +29,11 @@ class LimitlessMarket:
             no_token=tokens.get("noTokenId") or "",
             raw=d,
         )
+
+    def is_loggable(self) -> bool:
+        """
+        Placeholder filter for now.
+        Later we can exclude resolved/expired/illiquid markets.
+        For now, accept everything that has a slug.
+        """
+        return bool(self.slug)
