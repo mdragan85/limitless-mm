@@ -40,10 +40,9 @@ class MarketLogger:
             for m in raw_list
         ]
 
-        # Filter out expired or inactive markets
-        loggable = [m for m in markets if m.is_loggable()]
+        # TEMPORARY: do not filter until we define proper rules
+        loggable = markets
 
-        # Keep only the first N if configured
         return loggable[: settings.MAX_MARKETS_PER_UNDERLYING]
 
 
