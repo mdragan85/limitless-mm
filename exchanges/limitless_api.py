@@ -17,9 +17,13 @@ class LimitlessAPI:
     - Fetching orderbook snapshots
     """
 
-    def __init__(self, base_url: Optional[str] = None, timeout: float = 10.0):
-        self.base_url = base_url or settings.BASE_URL
-        self.client = httpx.Client(timeout=timeout)
+    def __init__(self):
+        self.base_url = "https://api.limitless.exchange"
+        self.session = requests.Session()          # <-- REQUIRED
+        self._headers = {
+            "accept": "application/json",
+            "Authorization": f"Bearer {settings.LIMITLESS_API_KEY}"
+        }
 
     # -------------------------
     # Low-level request helper
