@@ -24,9 +24,9 @@ class LimitlessAPI:
     # -------------------------
     # Low-level request helper
     # -------------------------
-    def _get(self, endpoint: str, params: Optional[dict] = None) -> Any:
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        response = self.client.get(url, params=params)
+    def _get(self, path: str, params: dict | None = None):
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        resp = self.session.get(url, headers=self._headers, params=params)
 
         try:
             response.raise_for_status()
@@ -77,20 +77,22 @@ class LimitlessAPI:
     # Orderbook endpoints
     # -------------------------
 
-    def get_orderbook(self, slug: str) -> Dict[str, Any]:
-        """Return the current orderbook for a market identified by its slug."""
-        if not slug:
-            raise ValueError("Market slug is required for orderbook requests")
+    def get_orderbook(self, slug: str, token_id: str) -> dict:
+        """
+        Fetch orderbook for a specific market outcome (YES or NO).
+        Limitless requires a tokenId query parameter to choose the outcome.
+        """
+        params = {"tokenId": token_id}
         return self._get(f"markets/{slug}/orderbook", params=params)
 
-        # -------------------------
-        # Cleanup
-        # -------------------------
-        def close(self):
-            self.client.close()
+    # -------------------------
+    # Cleanup
+    # -------------------------
+    def close(self):
+        self.client.close()
 
-        def __enter__(self):
-            return self
+    def __enter__(self):
+        return self
 
-        def __exit__(self, exc_type, exc, tb):
-            self.close()
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
