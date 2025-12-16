@@ -117,7 +117,7 @@ class LimitlessAPI:
     # Cleanup
     # -------------------------
     def close(self):
-        self.client.close()
+        self.session.close()
 
     def __enter__(self):
         return self
