@@ -2,7 +2,6 @@
 Entrypoint for running the Limitless market logger.
 """
 
-import sys
 import signal
 import time
 
@@ -15,27 +14,44 @@ def main():
     api = LimitlessAPI()
     logger = MarketLogger(api)
 
-    def handle_sigint(sig, frame):
-        print("\nReceived interrupt. Shutting down cleanly...")
-        logger.api.close()
-        sys.exit(0)
+    stop = False
 
-    # Graceful shutdown on Ctrl+C
-    signal.signal(signal.SIGINT, handle_sigint)
+    def handle_stop(sig, frame):
+        nonlocal stop
+        print("\nReceived interrupt. Shutting down cleanly...")
+        stop = True
+
+    # Graceful shutdown on Ctrl+C and SIGTERM
+    signal.signal(signal.SIGINT, handle_stop)
+    signal.signal(signal.SIGTERM, handle_stop)
 
     print(f"Starting Limitless market logger. Output -> {logger.out_dir}")
 
-    while True:
-        for underlying in settings.UNDERLYINGS:
-            try:
-                markets = api.discover_markets(underlying)
-            except Exception as exc:
-                print(f"[WARN] Market discovery failed for {underlying}: {exc}")
-                continue
+    try:
+        while not stop:
+            for underlying in settings.UNDERLYINGS:
+                if stop:
+                    break
 
-            logger.log_markets(markets)
+                try:
+                    markets = api.discover_markets(underlying)
+                except Exception as exc:
+                    print(f"[WARN] Market discovery failed for {underlying}: {exc}")
+                    continue
 
-        time.sleep(settings.POLL_INTERVAL)
+                logger.log_markets(markets)
+
+            if stop:
+                break
+
+            print(f"sleeping for {settings.POLL_INTERVAL}...")
+            time.sleep(settings.POLL_INTERVAL)
+            if stop:
+                break
+    except KeyboardInterrupt:
+        print("\nKeyboard interrupt received. Exiting...")
+    finally:
+        api.close()
 
 
 if __name__ == "__main__":
