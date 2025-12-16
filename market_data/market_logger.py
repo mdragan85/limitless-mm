@@ -29,23 +29,9 @@ class MarketLogger:
     # -------------------------
     def discover_markets(self, underlying: str) -> List[LimitlessMarket]:
         """
-        Fetch markets for one underlying and normalize them.
-        Returns a filtered list of loggable markets.
+        Delegate market discovery to LimitlessAPI.
         """
-        raw_list = self.api.list_markets(underlying)
-
-        # inject the underlying symbol so LimitlessMarket sees it
-        markets = [
-            LimitlessMarket.from_api({**m, "underlying": underlying})
-            for m in raw_list
-        ]
-
-        # Filter out expired or inactive markets
-        loggable = [m for m in markets if m.is_loggable()]
-        # Keep only the first N if configured
-        if settings.MAX_MARKETS_PER_UNDERLYING:
-            return loggable[: settings.MAX_MARKETS_PER_UNDERLYING]
-        return loggable
+        return self.api.discover_markets(underlying)
 
 
     # -------------------------

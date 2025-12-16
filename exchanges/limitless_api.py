@@ -6,6 +6,7 @@ Provides market discovery and orderbook snapshot retrieval.
 import requests
 from typing import Any, Dict, List, Optional
 import httpx
+from .limitless_market import LimitlessMarket
 
 from config.settings import settings
 
@@ -54,27 +55,41 @@ class LimitlessAPI:
     # -------------------------
     def list_markets(self, underlying: str | None = None) -> list[dict]:
         """Return a list of active markets, optionally filtered by underlying ticker."""
-        payload = self._get("markets/active")  # returns BrowseActiveMarketsResponseDto
+        payload = self._get("markets/active")
+        markets = payload.get("data", []) if isinstance(payload, dict) else payload or []
 
-        # Unwrap the actual list of markets from the response
-        if isinstance(payload, dict):
-            raw = payload.get("data", []) or []
-        else:
-            raw = payload or []
+        if not underlying:
+            return markets
 
-        if underlying:
-            u = underlying.upper()
-            filtered: list[dict] = []
-            for m in raw:
-                if not isinstance(m, dict):
-                    continue
-                ticker = (m.get("ticker") or "").upper()
-                title = (m.get("title") or "").upper()
-                if ticker.startswith(u) or u in title:
-                    filtered.append(m)
-            raw = filtered
+        symbol = underlying.upper()
+        filtered: list[dict] = []
+        for market in markets:
+            if not isinstance(market, dict):
+                continue
 
-        return raw
+            ticker = (market.get("ticker") or "").upper()
+            title = (market.get("title") or "").upper()
+            if symbol in ticker or symbol in title:
+                filtered.append(market)
+
+        return filtered
+
+    def discover_markets(self, underlying: str) -> list[LimitlessMarket]:
+        """
+        Fetch and normalize markets for one underlying.
+        Returns a filtered list of loggable markets capped by settings.
+        """
+        raw_markets = self.list_markets(underlying)
+        markets = [
+            LimitlessMarket.from_api({**m, "underlying": underlying})
+            for m in raw_markets
+            if isinstance(m, dict)
+        ]
+
+        loggable = [m for m in markets if m.is_loggable()]
+        if settings.MAX_MARKETS_PER_UNDERLYING:
+            return loggable[: settings.MAX_MARKETS_PER_UNDERLYING]
+        return loggable
 
 
 
