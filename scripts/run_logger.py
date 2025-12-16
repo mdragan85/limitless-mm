@@ -5,11 +5,13 @@ Entrypoint for running the Limitless market logger.
 import sys
 import signal
 
+from exchanges.limitless_api import LimitlessAPI
 from market_data.market_logger import MarketLogger
 
 
 def main():
-    logger = MarketLogger()
+    api = LimitlessAPI()
+    logger = MarketLogger(api)
 
     def handle_sigint(sig, frame):
         print("\nReceived interrupt. Shutting down cleanly...")

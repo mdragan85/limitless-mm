@@ -1,5 +1,7 @@
 from exchanges.limitless_api import LimitlessAPI
+from market_data.market_logger import MarketLogger
 
 api = LimitlessAPI()
-mkts = api.discover_markets("BTC")
-print(len(mkts), mkts[0])
+logger = MarketLogger(api)
+markets = api.discover_markets("BTC")
+logger.log_snapshot(markets[0])

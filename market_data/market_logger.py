@@ -7,7 +7,6 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List
 
 from config.settings import settings
 from exchanges.limitless_api import LimitlessAPI
@@ -19,19 +18,10 @@ class MarketLogger:
     Polls multiple markets across multiple underlyings and writes snapshot logs.
     """
 
-    def __init__(self):
-        self.api = LimitlessAPI()
+    def __init__(self, api: LimitlessAPI):
+        self.api = api
         self.out_dir = Path(settings.OUTPUT_DIR)
         self.out_dir.mkdir(parents=True, exist_ok=True)
-
-    # -------------------------
-    # Market discovery
-    # -------------------------
-    def discover_markets(self, underlying: str) -> List[LimitlessMarket]:
-        """
-        Delegate market discovery to LimitlessAPI.
-        """
-        return self.api.discover_markets(underlying)
 
 
     # -------------------------
@@ -68,6 +58,13 @@ class MarketLogger:
             f.write(json.dumps(record) + "\n")
 
     # -------------------------
+    # Logging helpers
+    # -------------------------
+    def log_markets(self, markets: list[LimitlessMarket]) -> None:
+        for market in markets:
+            self.log_snapshot(market)
+
+    # -------------------------
     # Main loop
     # -------------------------
     def run(self):
@@ -80,12 +77,11 @@ class MarketLogger:
         while True:
             for underlying in settings.UNDERLYINGS:
                 try:
-                    markets = self.discover_markets(underlying)
+                    markets = self.api.discover_markets(underlying)
                 except Exception as exc:
                     print(f"[WARN] Market discovery failed for {underlying}: {exc}")
                     continue
 
-                for market in markets:
-                    self.log_snapshot(market)
+                self.log_markets(markets)
 
             time.sleep(settings.POLL_INTERVAL)
