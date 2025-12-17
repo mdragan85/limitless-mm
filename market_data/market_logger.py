@@ -118,8 +118,11 @@ class MarketLogger:
                 active.save()
 
             for mid, info in active.active.items():
-
-                raw_ob = self.api.get_orderbook(info["slug"])
+                try:
+                    raw_ob = self.api.get_orderbook(info["slug"])
+                except RuntimeError:
+                    print(f'error fetching orderbook for {mid}')
+                    continue
 
                 snap = {
                     "timestamp": datetime.utcnow().isoformat(),

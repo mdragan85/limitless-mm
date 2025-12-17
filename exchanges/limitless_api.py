@@ -102,16 +102,22 @@ class LimitlessAPI:
     # -------------------------
     # Orderbook endpoints
     # -------------------------
-
-
+    
     def get_orderbook(self, slug: str) -> dict:
         """
         Fetch the current orderbook for a market.
 
         The Limitless API returns a single orderbook per market when
         you hit /markets/{slug}/orderbook.
+         NOTE: Limitless orderbooks are fetched by *slug*, not market_id.
+         Endpoint: /markets/{slug}/orderbook
         """
+        if slug.isdigit():
+            raise ValueError(
+                f"get_orderbook expects slug, got numeric market_id: {slug}"
+            )
         return self._get(f"markets/{slug}/orderbook")
+
 
     # -------------------------
     # Cleanup
