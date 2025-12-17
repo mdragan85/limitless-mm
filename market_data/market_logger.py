@@ -118,7 +118,17 @@ class MarketLogger:
                 active.save()
 
             for mid, info in active.active.items():
-                snap = self.api.get_orderbook(info["slug"])
+
+                raw_ob = self.api.get_orderbook(info["slug"])
+
+                snap = {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "market_id": mid,
+                    "slug": info["slug"],
+                    "underlying": info.get("underlying"),
+                    "orderbook": raw_ob,
+                }
+
                 rec = normalize_orderbook(snap, full_orderbook=settings.FULL_ORDERBOOK)
                 books_writer.write(rec)
 
