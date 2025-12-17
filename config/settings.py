@@ -13,21 +13,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-# Logging behavior
-FULL_ORDERBOOK = True
-ROTATE_MINUTES = 10
-FSYNC_SECONDS = 5
-DISCOVER_EVERY_SECONDS = 60
-EXPIRE_GRACE_SECONDS = 120
-
-
-
 @dataclass
 class LimitlessConfig:
     """
     Settings for connecting to the Limitless API and logging behavior.
     """
 
+    # Logging behavior
+    FULL_ORDERBOOK = True
+    ROTATE_MINUTES = 10
+    FSYNC_SECONDS = 5
+    DISCOVER_EVERY_SECONDS = 60
+    EXPIRE_GRACE_SECONDS = 120
 
     # API base URL
     BASE_URL: str = os.getenv("LIMITLESS_BASE_URL", "https://api.limitless.exchange")
