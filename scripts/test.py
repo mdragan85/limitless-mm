@@ -1,7 +1,7 @@
-from exchanges.limitless_api import LimitlessAPI
-from market_data.market_logger import MarketLogger
+from market_data.active_markets import ActiveMarkets
+from pathlib import Path
 
-api = LimitlessAPI()
-logger = MarketLogger(api)
-markets = api.discover_markets("BTC")
-logger.log_snapshot(markets[0])
+a = ActiveMarkets(Path("data/state.json"), 120)
+a.refresh([])
+a.save()
+print("OK")

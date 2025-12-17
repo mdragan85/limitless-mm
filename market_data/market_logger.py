@@ -12,6 +12,10 @@ from config.settings import settings
 from exchanges.limitless_api import LimitlessAPI
 from exchanges.limitless_market import LimitlessMarket
 
+from market_data.jsonl_writer import JsonlRotatingWriter
+from market_data.normalize_orderbook import normalize_orderbook
+from market_data.active_markets import ActiveMarkets
+
 
 class MarketLogger:
     """
@@ -68,20 +72,54 @@ class MarketLogger:
     # Main loop
     # -------------------------
     def run(self):
-        """
-        Main polling loop.
-        Discovers markets once per iteration, logs all snapshots, sleeps, repeats.
-        """
-        print(f"Starting Limitless market logger. Output -> {self.out_dir}")
+        date = datetime.utcnow().strftime("%Y-%m-%d")
+
+        markets_writer = JsonlRotatingWriter(
+            self.out_dir / "markets" / f"date={date}",
+            "markets",
+            settings.ROTATE_MINUTES,
+            settings.FSYNC_SECONDS,
+        )
+
+        books_writer = JsonlRotatingWriter(
+            self.out_dir / "orderbooks" / f"date={date}",
+            "orderbooks",
+            settings.ROTATE_MINUTES,
+            settings.FSYNC_SECONDS,
+        )
+
+        active = ActiveMarkets(
+            self.out_dir / "state" / "active_markets.json",
+            settings.EXPIRE_GRACE_SECONDS,
+        )
+
+        last_discover = 0
 
         while True:
-            for underlying in settings.UNDERLYINGS:
-                try:
-                    markets = self.api.discover_markets(underlying)
-                except Exception as exc:
-                    print(f"[WARN] Market discovery failed for {underlying}: {exc}")
-                    continue
+            now = time.time()
 
-                self.log_markets(markets)
+            if now - last_discover > settings.DISCOVER_EVERY_SECONDS:
+                last_discover = now
+
+                for u in settings.UNDERLYINGS:
+                    markets = self.api.discover_markets(u)
+                    active.refresh(markets)
+
+                    for m in markets:
+                        markets_writer.write({
+                            "asof_ts_utc": datetime.utcnow().isoformat(),
+                            "market_id": m.market_id,
+                            "slug": m.slug,
+                            "underlying": m.underlying,
+                            "raw": m.raw,
+                        })
+
+                active.prune()
+                active.save()
+
+            for mid, info in active.active.items():
+                snap = self.api.get_orderbook(info["slug"])
+                rec = normalize_orderbook(snap, full_orderbook=settings.FULL_ORDERBOOK)
+                books_writer.write(rec)
 
             time.sleep(settings.POLL_INTERVAL)
