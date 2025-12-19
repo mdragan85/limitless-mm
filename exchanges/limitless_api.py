@@ -10,6 +10,7 @@ from .limitless_market import LimitlessMarket
 
 from config.settings import settings
 
+TIMEOUT = 10
 
 class LimitlessAPI:
     """
@@ -37,7 +38,7 @@ class LimitlessAPI:
     # -------------------------
     def _get(self, path: str, params: dict | None = None):
         url = f"{self.base_url}/{path.lstrip('/')}"
-        resp = self.session.get(url, headers=self._headers, params=params)
+        resp = self.session.get(url, headers=self._headers, params=params, timeout=TIMEOUT)
 
         try:
             resp.raise_for_status()
