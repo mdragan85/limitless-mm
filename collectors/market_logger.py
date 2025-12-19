@@ -12,8 +12,8 @@ from config.settings import settings
 from venues.limitless_api import LimitlessAPI
 from venues.limitless_market import LimitlessMarket
 
-from market_data.jsonl_writer import JsonlRotatingWriter
-from market_data.active_markets import ActiveMarkets
+from storage.jsonl_writer import JsonlRotatingWriter
+from collectors.active_markets import ActiveMarkets
 
 from .normalize_orderbook import normalize_orderbook
 

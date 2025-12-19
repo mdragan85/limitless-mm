@@ -4,6 +4,7 @@ from typing import Any, Dict
 
 @dataclass
 class LimitlessMarket:
+    
     market_id: str
     slug: str
     underlying: str
