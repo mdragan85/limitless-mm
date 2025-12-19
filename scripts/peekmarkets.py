@@ -1,5 +1,5 @@
 # scripts/peek_markets.py
-from exchanges.limitless_api import LimitlessAPI
+from venues.limitless_api import LimitlessAPI
 
 api = LimitlessAPI()
 markets = api.list_markets()  # no filter

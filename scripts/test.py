@@ -1,4 +1,4 @@
-from exchanges.limitless_api import LimitlessAPI
+from venues.limitless_api import LimitlessAPI
 
 def try_path(api, path: str):
     try:

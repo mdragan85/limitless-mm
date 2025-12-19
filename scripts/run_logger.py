@@ -1,5 +1,5 @@
 from market_data.market_logger import MarketLogger
-from exchanges.limitless_api import LimitlessAPI
+from venues.limitless_api import LimitlessAPI
 
 def main():
     print ('entered code')

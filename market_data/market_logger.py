@@ -9,8 +9,8 @@ from datetime import datetime
 from pathlib import Path
 
 from config.settings import settings
-from exchanges.limitless_api import LimitlessAPI
-from exchanges.limitless_market import LimitlessMarket
+from venues.limitless_api import LimitlessAPI
+from venues.limitless_market import LimitlessMarket
 
 from market_data.jsonl_writer import JsonlRotatingWriter
 from market_data.normalize_orderbook import normalize_orderbook
