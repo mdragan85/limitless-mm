@@ -6,7 +6,7 @@
       "type": "shell",
       "command": "/opt/anaconda3/envs/quantlibs/bin/python",
       "group": { "kind": "build", "isDefault": true },
-      "args": ["-m", "scripts.run_logger"],
+      "args": ["-m", "app.run_logger"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
