@@ -6,11 +6,12 @@ Reads settings from environment variables and provides defaults.
 import os
 from pathlib import Path
 from dataclasses import dataclass, field
-
 from dotenv import load_dotenv
 
-# Load .env file if present
-load_dotenv()
+# Load .env file if present (explicit path avoids python-dotenv auto-discovery issues on newer Python)
+ENV_PATH = Path(__file__).resolve().parents[1] / ".env"  # repo_root/.env if config/ is one level down
+load_dotenv(dotenv_path=ENV_PATH, override=False)
+
 
 
 @dataclass
@@ -43,9 +44,10 @@ class LimitlessConfig:
     MAX_MARKETS_PER_UNDERLYING: int = int(
         os.getenv("LIMITLESS_MAX_MARKETS_PER_UNDERLYING", "10")
     )
-
+	
     # Where to write logs
     OUTPUT_DIR: Path = Path(os.getenv("LIMITLESS_OUTPUT_DIR", ".outputs/logs"))
+
 
     def __post_init__(self):
         # Normalize underlying symbols to uppercase
