@@ -1,4 +1,4 @@
-from market_data.market_logger import MarketLogger
+from collectors.market_logger import MarketLogger
 from venues.limitless_api import LimitlessAPI
 
 def main():

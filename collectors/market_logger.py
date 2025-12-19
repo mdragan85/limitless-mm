@@ -13,8 +13,9 @@ from venues.limitless_api import LimitlessAPI
 from venues.limitless_market import LimitlessMarket
 
 from market_data.jsonl_writer import JsonlRotatingWriter
-from market_data.normalize_orderbook import normalize_orderbook
 from market_data.active_markets import ActiveMarkets
+
+from .normalize_orderbook import normalize_orderbook
 
 
 class MarketLogger:
