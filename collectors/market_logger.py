@@ -20,7 +20,29 @@ from .normalize_orderbook import normalize_orderbook
 
 class MarketLogger:
     """
-    Polls multiple markets across multiple underlyings and writes snapshot logs.
+    Market data collection service for Limitless.
+
+    Responsibilities:
+    - Periodically discover markets for configured underlyings (settings.UNDERLYINGS)
+    - Maintain a persisted set of "active" markets across restarts (ActiveMarkets)
+    - Poll orderbook snapshots for active markets in a tight loop
+    - Apply per-market exponential backoff and a global cooldown during outages
+    - Persist both market metadata and normalized orderbook snapshots to disk
+      using time-based file rotation (JsonlRotatingWriter)
+
+    Output conventions:
+    - Market metadata logs are written under:  <OUTPUT_DIR>/markets/date=YYYY-MM-DD/
+    - Orderbook snapshot logs are written under: <OUTPUT_DIR>/orderbooks/date=YYYY-MM-DD/
+    - Active market state is written under:     <OUTPUT_DIR>/state/active_markets.json
+
+    Notes / sharp edges:
+    - This class currently includes an older "single snapshot -> append JSONL" pathway
+      (log_snapshot / log_markets) that writes per-underlying files directly.
+      The main production pipeline is `run()`, which uses rotating writers and the
+      ActiveMarkets state machine. If you standardize outputs, consider removing the
+      direct-write pathway to avoid having two logging formats.
+    - This module is intentionally limited to data collection and persistence; it should
+      not contain strategy, pricing, or execution logic.
     """
 
     def __init__(self, api: LimitlessAPI):
