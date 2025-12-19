@@ -72,9 +72,14 @@ class MarketLogger:
     # Main loop
     # -------------------------
     def run(self):
+        # Track the current UTC date so we can roll log folders at midnight
         current_date = datetime.utcnow().strftime("%Y-%m-%d")
 
         def make_writers(date_str: str):
+            """
+            Create fresh rotating writers for a given UTC date.
+            Called once at startup and again on midnight rollover.
+            """
             markets_writer = JsonlRotatingWriter(
                 self.out_dir / "markets" / f"date={date_str}",
                 "markets",
@@ -90,19 +95,32 @@ class MarketLogger:
             )
             return markets_writer, books_writer
 
+        # Initial writers
         markets_writer, books_writer = make_writers(current_date)
 
+        # Tracks which markets are currently active / stale
         active = ActiveMarkets(
             self.out_dir / "state" / "active_markets.json",
             settings.EXPIRE_GRACE_SECONDS,
         )
 
+        # Timestamp of last market discovery run
         last_discover = 0
+
+        # Per-market failure state:
+        # - count: consecutive failures
+        # - next_ok: unix timestamp after which we try again
+        # - last_log: last time we logged a warning for this market
+        fail_state = {}  # market_id -> dict
+
+        # If a large fraction of markets are failing, pause globally
+        GLOBAL_COOLDOWN_SECONDS = 10
 
         while True:
             now = time.time()
 
-            # ----- NEW: rollover writers at midnight UTC -----
+            # ----- Midnight UTC rollover -----
+            # If the date has changed, close current writers and open new ones
             new_date = datetime.utcnow().strftime("%Y-%m-%d")
             if new_date != current_date:
                 try:
@@ -111,8 +129,10 @@ class MarketLogger:
                 finally:
                     current_date = new_date
                     markets_writer, books_writer = make_writers(current_date)
-            # -----------------------------------------------
+            # ---------------------------------
 
+            # ----- Periodic market discovery -----
+            # Refresh the list of tradable markets every DISCOVER_EVERY_SECONDS
             if now - last_discover > settings.DISCOVER_EVERY_SECONDS:
                 last_discover = now
 
@@ -120,6 +140,7 @@ class MarketLogger:
                     markets = self.api.discover_markets(u)
                     active.refresh(markets)
 
+                    # Persist raw market metadata for audit / research
                     for m in markets:
                         markets_writer.write({
                             "asof_ts_utc": datetime.utcnow().isoformat(),
@@ -129,25 +150,81 @@ class MarketLogger:
                             "raw": m.raw,
                         })
 
+                # Remove expired markets and persist state
                 active.prune()
                 active.save()
+            # ------------------------------------
 
+            loop_failures = 0
+            loop_successes = 0
+            now_ts = time.time()
+
+            # ----- Orderbook polling -----
             for mid, info in active.active.items():
-                try:
-                    raw_ob = self.api.get_orderbook(info["slug"])
-                except RuntimeError:
-                    print(f'error fetching orderbook for {mid}')
+                # Initialize or fetch failure state for this market
+                st = fail_state.get(mid, {"count": 0, "next_ok": 0.0, "last_log": 0.0})
+
+                # Skip markets that are currently cooling down
+                if now_ts < st["next_ok"]:
                     continue
 
+                slug = info["slug"]
+
+                try:
+                    raw_ob = self.api.get_orderbook(slug)
+
+                    # Success: reset failure state
+                    fail_state[mid] = {"count": 0, "next_ok": 0.0, "last_log": 0.0}
+                    loop_successes += 1
+
+                except Exception as exc:
+                    # Failure: increment backoff state
+                    loop_failures += 1
+                    st["count"] += 1
+
+                    # Exponential backoff capped at 60 seconds
+                    # 2, 4, 8, 16, 32, 60...
+                    backoff = min(60, 2 ** min(st["count"], 6))
+                    st["next_ok"] = now_ts + backoff
+
+                    # Log sparingly to avoid console spam
+                    if st["count"] in (1, 3, 5) or (now_ts - st["last_log"] > 60):
+                        print(
+                            f"[WARN] get_orderbook failed "
+                            f"mid={mid} slug={slug} "
+                            f"count={st['count']} backoff={backoff}s "
+                            f"err={type(exc).__name__}: {exc}"
+                        )
+                        st["last_log"] = now_ts
+
+                    fail_state[mid] = st
+                    continue
+
+                # Normalize and persist the orderbook snapshot
                 snap = {
                     "timestamp": datetime.utcnow().isoformat(),
                     "market_id": mid,
-                    "slug": info["slug"],
+                    "slug": slug,
                     "underlying": info.get("underlying"),
                     "orderbook": raw_ob,
                 }
 
-                rec = normalize_orderbook(snap, full_orderbook=settings.FULL_ORDERBOOK)
+                rec = normalize_orderbook(
+                    snap, full_orderbook=settings.FULL_ORDERBOOK
+                )
                 books_writer.write(rec)
+            # -----------------------------
 
+            # ----- Global health check -----
+            # If many markets failed in this loop, pause briefly to avoid hammering
+            if loop_failures >= max(3, len(active.active) // 2):
+                print(
+                    f"[WARN] high failure rate this loop "
+                    f"(failures={loop_failures}, successes={loop_successes}). "
+                    f"Cooling down {GLOBAL_COOLDOWN_SECONDS}s."
+                )
+                time.sleep(GLOBAL_COOLDOWN_SECONDS)
+            # --------------------------------
+
+            # Normal polling interval
             time.sleep(settings.POLL_INTERVAL)
