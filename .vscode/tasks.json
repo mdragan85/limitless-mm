@@ -1,0 +1,21 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run Limitless Logger (module)",
+      "type": "shell",
+      "command": "/opt/anaconda3/envs/quantlibs/bin/python",
+      "group": { "kind": "build", "isDefault": true },
+      "args": ["-m", "scripts.run_logger"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    }
+  ]
+}
