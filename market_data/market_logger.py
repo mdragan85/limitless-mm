@@ -72,21 +72,25 @@ class MarketLogger:
     # Main loop
     # -------------------------
     def run(self):
-        date = datetime.utcnow().strftime("%Y-%m-%d")
+        current_date = datetime.utcnow().strftime("%Y-%m-%d")
 
-        markets_writer = JsonlRotatingWriter(
-            self.out_dir / "markets" / f"date={date}",
-            "markets",
-            settings.ROTATE_MINUTES,
-            settings.FSYNC_SECONDS,
-        )
+        def make_writers(date_str: str):
+            markets_writer = JsonlRotatingWriter(
+                self.out_dir / "markets" / f"date={date_str}",
+                "markets",
+                settings.ROTATE_MINUTES,
+                settings.FSYNC_SECONDS,
+            )
 
-        books_writer = JsonlRotatingWriter(
-            self.out_dir / "orderbooks" / f"date={date}",
-            "orderbooks",
-            settings.ROTATE_MINUTES,
-            settings.FSYNC_SECONDS,
-        )
+            books_writer = JsonlRotatingWriter(
+                self.out_dir / "orderbooks" / f"date={date_str}",
+                "orderbooks",
+                settings.ROTATE_MINUTES,
+                settings.FSYNC_SECONDS,
+            )
+            return markets_writer, books_writer
+
+        markets_writer, books_writer = make_writers(current_date)
 
         active = ActiveMarkets(
             self.out_dir / "state" / "active_markets.json",
@@ -97,6 +101,17 @@ class MarketLogger:
 
         while True:
             now = time.time()
+
+            # ----- NEW: rollover writers at midnight UTC -----
+            new_date = datetime.utcnow().strftime("%Y-%m-%d")
+            if new_date != current_date:
+                try:
+                    markets_writer.close()
+                    books_writer.close()
+                finally:
+                    current_date = new_date
+                    markets_writer, books_writer = make_writers(current_date)
+            # -----------------------------------------------
 
             if now - last_discover > settings.DISCOVER_EVERY_SECONDS:
                 last_discover = now

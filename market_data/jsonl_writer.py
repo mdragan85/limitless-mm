@@ -42,3 +42,12 @@ class JsonlRotatingWriter:
         if now - self.last_fsync > self.fsync_seconds:
             os.fsync(self.fh.fileno())
             self.last_fsync = now
+
+    def close(self):
+        if self.fh:
+            try:
+                self.fh.flush()
+                os.fsync(self.fh.fileno())
+            finally:
+                self.fh.close()
+                self.fh = None
