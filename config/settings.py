@@ -45,7 +45,7 @@ class LimitlessConfig:
     )
 
     # Where to write logs
-    OUTPUT_DIR: Path = Path(os.getenv("LIMITLESS_OUTPUT_DIR", "data/logs"))
+    OUTPUT_DIR: Path = Path(os.getenv("LIMITLESS_OUTPUT_DIR", ".outputs/logs"))
 
     def __post_init__(self):
         # Normalize underlying symbols to uppercase
