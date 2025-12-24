@@ -6,7 +6,7 @@ Provides market discovery and orderbook snapshot retrieval.
 import requests
 from typing import Any, Dict, List, Optional
 import httpx
-from .limitless_market import LimitlessMarket
+from .market import LimitlessMarket
 
 from config.settings import settings
 

@@ -9,8 +9,8 @@ from datetime import datetime
 from pathlib import Path
 
 from config.settings import settings
-from venues.limitless_api import LimitlessAPI
-from venues.limitless_market import LimitlessMarket
+from venues.limitless.client import LimitlessVenueClient
+from venues.limitless.market import LimitlessMarket
 
 from storage.jsonl_writer import JsonlRotatingWriter
 from collectors.active_markets import ActiveMarkets
@@ -45,11 +45,10 @@ class MarketLogger:
       not contain strategy, pricing, or execution logic.
     """
 
-    def __init__(self, api: LimitlessAPI):
-        self.api = api
+    def __init__(self, client: LimitlessVenueClient):
+        self.client = client
         self.out_dir = Path(settings.OUTPUT_DIR)
         self.out_dir.mkdir(parents=True, exist_ok=True)
-
 
     # -------------------------
     # Logging a single snapshot
@@ -60,7 +59,7 @@ class MarketLogger:
         append it as one JSON line to the per-underlying log file.
         """
         try:
-            orderbook = self.api.get_orderbook(market.slug)
+            orderbook = self.client.get_orderbook(market.slug)
         except Exception as exc:
             print(
                 f"[WARN] Failed to fetch orderbook for "
@@ -160,7 +159,7 @@ class MarketLogger:
                 last_discover = now
 
                 for u in settings.UNDERLYINGS:
-                    markets = self.api.discover_markets(u)
+                    markets = self.client.discover_markets(u)
                     active.refresh(markets)
 
                     # Persist raw market metadata for audit / research
@@ -194,7 +193,7 @@ class MarketLogger:
                 slug = info["slug"]
 
                 try:
-                    raw_ob = self.api.get_orderbook(slug)
+                    raw_ob = self.client.get_orderbook(slug)
 
                     # Success: reset failure state
                     fail_state[mid] = {"count": 0, "next_ok": 0.0, "last_log": 0.0}
