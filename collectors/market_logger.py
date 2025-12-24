@@ -185,7 +185,7 @@ class MarketLogger:
 
         # NOTE: Limitless-only for now; Polymarket will replace this block with discover_fn.
         for u in settings.UNDERLYINGS:
-            markets = v.client.discover_markets(u)
+            markets = v.discover_fn() 
             active.refresh_from_markets(venue=v.client.venue, markets=markets)
 
             for m in markets:

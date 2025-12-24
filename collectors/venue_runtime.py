@@ -13,3 +13,4 @@ class VenueRuntime:
     client: object
     normalizer: Callable
     out_dir: Path
+    discover_fn: Callable  
