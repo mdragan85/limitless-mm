@@ -16,14 +16,26 @@ poly_client = PolymarketClient()
 
 
 def discover_polymarket():
-    return poly_client.discover_markets(POLYMARKET_RULES)
+    return poly_client.discover_instruments(POLYMARKET_RULES)
 
 
 def discover_limitless():
-    markets = []
+    instruments = []
     for u in settings.UNDERLYINGS:
-        markets.extend(limitless_client.discover_markets(u))
-    return markets
+        markets = limitless_client.discover_markets(u)
+        for m in markets:
+            instruments.append({
+                "venue": "limitless",
+                "market_id": m.market_id,
+                "instrument_id": "BOOK",
+                "poll_key": m.slug,                    # Limitless polls by slug
+                "slug": m.slug,
+                "underlying": m.underlying,
+                "expiration": m.raw.get("expirationTimestamp"),
+                "title": getattr(m, "title", None),
+                "raw": m.raw,
+            })
+    return instruments
 
 
 def main():
@@ -40,12 +52,12 @@ def main():
     polymarket = VenueRuntime(
         name="polymarket",
         client=poly_client,
-        normalizer=lambda *args, **kwargs: None,  # TEMP
+        normalizer=lambda rec, **kwargs: rec,
         out_dir=Path(settings.OUTPUT_DIR) / "polymarket",
         discover_fn=discover_polymarket,
     )
 
-    logger = MarketLogger(venues=[limitless])
+    logger = MarketLogger(venues=[limitless, polymarket])
     logger.run()
 
 

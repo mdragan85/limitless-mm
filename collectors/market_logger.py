@@ -183,19 +183,14 @@ class MarketLogger:
 
         vs["last_discover"] = now
 
-        # NOTE: Limitless-only for now; Polymarket will replace this block with discover_fn.
-        for u in settings.UNDERLYINGS:
-            markets = v.discover_fn() 
-            active.refresh_from_markets(venue=v.client.venue, markets=markets)
+        instruments = v.discover_fn()
+        active.refresh_from_instruments(instruments)
 
-            for m in markets:
-                markets_writer.write({
-                    "asof_ts_utc": datetime.utcnow().isoformat(),
-                    "market_id": m.market_id,
-                    "slug": m.slug,
-                    "underlying": m.underlying,
-                    "raw": m.raw,
-                })
+        for inst in instruments:
+            markets_writer.write({
+                "asof_ts_utc": datetime.utcnow().isoformat(),
+                **inst,
+            })
 
         active.prune()
         active.save()
@@ -264,7 +259,7 @@ class MarketLogger:
                 "poll_key": info.get("poll_key"),
             }
 
-            rec = v.normalizer(snap, full_orderbook=settings.FULL_ORDERBOOK)
+            rec = v.normalizer(snap, full_orderbook=settings.FULL_ORDERBOOK) or snap
             books_writer.write(rec)
 
         return (loop_successes, loop_failures)
