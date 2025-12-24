@@ -14,6 +14,7 @@ from venues.limitless.market import LimitlessMarket
 
 from storage.jsonl_writer import JsonlRotatingWriter
 from collectors.active_instruments import ActiveInstruments
+from collectors.venue_runtime import VenueRuntime
 
 from venues.limitless.normalizer import normalize_orderbook
 
@@ -45,10 +46,10 @@ class MarketLogger:
       not contain strategy, pricing, or execution logic.
     """
 
-    def __init__(self, client: LimitlessVenueClient):
-        self.client = client
-        self.out_dir = Path(settings.OUTPUT_DIR)
-        self.out_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, venues: list[VenueRuntime]):
+        self.venues = venues
+        for v in self.venues:
+            v.out_dir.mkdir(parents=True, exist_ok=True)
 
     # -------------------------
     # Logging a single snapshot
@@ -94,155 +95,174 @@ class MarketLogger:
     # Main loop
     # -------------------------
     def run(self):
-        # Track the current UTC date so we can roll log folders at midnight
-        current_date = datetime.utcnow().strftime("%Y-%m-%d")
 
-        def make_writers(date_str: str):
-            """
-            Create fresh rotating writers for a given UTC date.
-            Called once at startup and again on midnight rollover.
-            """
+        venue_state = {}  # NEW: per-venue runtime state lives here
+
+        GLOBAL_COOLDOWN_SECONDS = 10  # unchanged concept; used per-venue loop below
+
+        # NEW: Initialize per-venue writers/state/backoff
+        for v in self.venues:
+            current_date = datetime.utcnow().strftime("%Y-%m-%d")  # NEW: per-venue current date
+
             markets_writer = JsonlRotatingWriter(
-                self.out_dir / "markets" / f"date={date_str}",
+                v.out_dir / "markets" / f"date={current_date}",  # NEW: venue-scoped out_dir
                 "markets",
                 settings.ROTATE_MINUTES,
                 settings.FSYNC_SECONDS,
             )
 
             books_writer = JsonlRotatingWriter(
-                self.out_dir / "orderbooks" / f"date={date_str}",
+                v.out_dir / "orderbooks" / f"date={current_date}",  # NEW: venue-scoped out_dir
                 "orderbooks",
                 settings.ROTATE_MINUTES,
                 settings.FSYNC_SECONDS,
             )
-            return markets_writer, books_writer
 
-        # Initial writers
-        markets_writer, books_writer = make_writers(current_date)
+            active = ActiveInstruments(
+                v.out_dir / "state" / "active_instruments.json",  # NEW: venue-scoped state file
+                settings.EXPIRE_GRACE_SECONDS,
+            )
 
-        # Tracks which markets are currently active / stale
-        active = ActiveInstruments(
-            self.out_dir / "state" / "active_instruments.json",
-            settings.EXPIRE_GRACE_SECONDS,
-        )
-
-        # Timestamp of last market discovery run
-        last_discover = 0
-
-        # Per-market failure state:
-        # - count: consecutive failures
-        # - next_ok: unix timestamp after which we try again
-        # - last_log: last time we logged a warning for this market
-        fail_state = {}  # market_id -> dict
-
-        # If a large fraction of markets are failing, pause globally
-        GLOBAL_COOLDOWN_SECONDS = 10
+            venue_state[v.name] = {  # NEW: bundle all per-venue variables
+                "venue": v,
+                "current_date": current_date,
+                "markets_writer": markets_writer,
+                "books_writer": books_writer,
+                "active": active,
+                "last_discover": 0,
+                "fail_state": {},  # key = instrument_key
+            }
 
         while True:
             now = time.time()
 
-            # ----- Midnight UTC rollover -----
-            # If the date has changed, close current writers and open new ones
-            new_date = datetime.utcnow().strftime("%Y-%m-%d")
-            if new_date != current_date:
-                try:
-                    markets_writer.close()
-                    books_writer.close()
-                finally:
-                    current_date = new_date
-                    markets_writer, books_writer = make_writers(current_date)
-            # ---------------------------------
+            # NEW: run the same logic for each venue, independently
+            for vs in venue_state.values():
+                v = vs["venue"]  # NEW: the VenueRuntime
+                active = vs["active"]
+                fail_state = vs["fail_state"]
+                markets_writer = vs["markets_writer"]
+                books_writer = vs["books_writer"]
+                current_date = vs["current_date"]
+                last_discover = vs["last_discover"]
 
-            # ----- Periodic market discovery -----
-            # Refresh the list of tradable markets every DISCOVER_EVERY_SECONDS
-            if now - last_discover > settings.DISCOVER_EVERY_SECONDS:
-                last_discover = now
-
-                for u in settings.UNDERLYINGS:
-                    markets = self.client.discover_markets(u)
-                    active.refresh_from_markets(venue=self.client.venue, markets=markets)
-
-                    # Persist raw market metadata for audit / research
-                    for m in markets:
-                        markets_writer.write({
-                            "asof_ts_utc": datetime.utcnow().isoformat(),
-                            "market_id": m.market_id,
-                            "slug": m.slug,
-                            "underlying": m.underlying,
-                            "raw": m.raw,
-                        })
-
-                # Remove expired markets and persist state
-                active.prune()
-                active.save()
-            # ------------------------------------
-
-            loop_failures = 0
-            loop_successes = 0
-            now_ts = time.time()
-
-            # ----- Orderbook polling -----
-            for ikey, info in active.active.items():
-                st = fail_state.get(ikey, {"count": 0, "next_ok": 0.0, "last_log": 0.0})
-                if now_ts < st["next_ok"]:
-                    continue
-
-                slug = info["slug"]
-                mid = info["market_id"]  # preserve market_id for logging/normalization
-
-                try:
-                    raw_ob = self.client.get_orderbook(slug)
-
-                    fail_state[ikey] = {"count": 0, "next_ok": 0.0, "last_log": 0.0}
-                    loop_successes += 1
-
-                except Exception as exc:
-                    loop_failures += 1
-                    st["count"] += 1
-
-                    backoff = min(60, 2 ** min(st["count"], 6))
-                    st["next_ok"] = now_ts + backoff
-
-                    if st["count"] in (1, 3, 5) or (now_ts - st["last_log"] > 60):
-                        print(
-                            f"[WARN] get_orderbook failed "
-                            f"ikey={ikey} mid={mid} slug={slug} "
-                            f"count={st['count']} backoff={backoff}s "
-                            f"err={type(exc).__name__}: {exc}"
+                # ----- Midnight UTC rollover (per venue) -----
+                new_date = datetime.utcnow().strftime("%Y-%m-%d")
+                if new_date != current_date:
+                    try:
+                        markets_writer.close()
+                        books_writer.close()
+                    finally:
+                        current_date = new_date
+                        # NEW: recreate writers with venue-scoped out_dir
+                        markets_writer = JsonlRotatingWriter(
+                            v.out_dir / "markets" / f"date={current_date}",
+                            "markets",
+                            settings.ROTATE_MINUTES,
+                            settings.FSYNC_SECONDS,
                         )
-                        st["last_log"] = now_ts
+                        books_writer = JsonlRotatingWriter(
+                            v.out_dir / "orderbooks" / f"date={current_date}",
+                            "orderbooks",
+                            settings.ROTATE_MINUTES,
+                            settings.FSYNC_SECONDS,
+                        )
+                        # NEW: write back updated per-venue state
+                        vs["current_date"] = current_date
+                        vs["markets_writer"] = markets_writer
+                        vs["books_writer"] = books_writer
+                # --------------------------------------------
 
-                    fail_state[ikey] = st
-                    continue
+                # ----- Periodic market discovery (per venue) -----
+                if now - last_discover > settings.DISCOVER_EVERY_SECONDS:
+                    last_discover = now
+                    vs["last_discover"] = last_discover  # NEW: persist per-venue last_discover
 
-                snap = {
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "market_id": mid,
-                    "slug": slug,
-                    "underlying": info.get("underlying"),
-                    "orderbook": raw_ob,
+                    # NOTE: Limitless uses settings.UNDERLYINGS; Polymarket will not.
+                    # We'll keep this as-is for now; Polymarket integration will replace
+                    # discovery via v.discover_fn later.
+                    for u in settings.UNDERLYINGS:
+                        markets = v.client.discover_markets(u)  # CHANGED: self.client -> v.client
+                        active.refresh_from_markets(venue=v.client.venue, markets=markets)  # CHANGED: per-venue client
 
-                    # extra fields for future venues (won't affect current normalization unless you add them)
-                    "instrument_key": ikey,
-                    "instrument_id": info.get("instrument_id"),
-                    "venue": info.get("venue"),
-                }
+                        for m in markets:
+                            markets_writer.write({
+                                "asof_ts_utc": datetime.utcnow().isoformat(),
+                                "market_id": m.market_id,
+                                "slug": m.slug,
+                                "underlying": m.underlying,
+                                "raw": m.raw,
+                            })
 
-                rec = normalize_orderbook(snap, full_orderbook=settings.FULL_ORDERBOOK)
-                books_writer.write(rec)
+                    active.prune()
+                    active.save()
+                # ------------------------------------------------
 
-            # -----------------------------
+                loop_failures = 0
+                loop_successes = 0
+                now_ts = time.time()
 
-            # ----- Global health check -----
-            # If many markets failed in this loop, pause briefly to avoid hammering
-            if loop_failures >= max(3, len(active.active) // 2):
-                print(
-                    f"[WARN] high failure rate this loop "
-                    f"(failures={loop_failures}, successes={loop_successes}). "
-                    f"Cooling down {GLOBAL_COOLDOWN_SECONDS}s."
-                )
-                time.sleep(GLOBAL_COOLDOWN_SECONDS)
-            # --------------------------------
+                # ----- Orderbook polling (per venue) -----
+                for ikey, info in active.active.items():
+                    st = fail_state.get(ikey, {"count": 0, "next_ok": 0.0, "last_log": 0.0})
+                    if now_ts < st["next_ok"]:
+                        continue
 
-            # Normal polling interval
+                    slug = info.get("slug")  # CHANGED: safer (Polymarket won't have slug)
+                    mid = info["market_id"]
+
+                    try:
+                        poll_key = info["poll_key"]
+                        raw_ob = v.client.get_orderbook(poll_key)  # CHANGED: self.client -> v.client
+
+                        fail_state[ikey] = {"count": 0, "next_ok": 0.0, "last_log": 0.0}
+                        loop_successes += 1
+
+                    except Exception as exc:
+                        loop_failures += 1
+                        st["count"] += 1
+
+                        backoff = min(60, 2 ** min(st["count"], 6))
+                        st["next_ok"] = now_ts + backoff
+
+                        if st["count"] in (1, 3, 5) or (now_ts - st["last_log"] > 60):
+                            print(
+                                f"[WARN] get_orderbook failed "
+                                f"venue={v.name} ikey={ikey} mid={mid} slug={slug} "
+                                f"count={st['count']} backoff={backoff}s "
+                                f"err={type(exc).__name__}: {exc}"
+                            )
+                            st["last_log"] = now_ts
+
+                        fail_state[ikey] = st
+                        continue
+
+                    snap = {
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "market_id": mid,
+                        "slug": slug,
+                        "underlying": info.get("underlying"),
+                        "orderbook": raw_ob,
+
+                        "instrument_key": ikey,
+                        "instrument_id": info.get("instrument_id"),
+                        "venue": info.get("venue"),
+                        "poll_key": info.get("poll_key"),
+                    }
+
+                    rec = v.normalizer(snap, full_orderbook=settings.FULL_ORDERBOOK)  # CHANGED: normalize via venue runtime
+                    books_writer.write(rec)
+                # ---------------------------------------
+
+                # ----- Global health check (per venue) -----
+                if loop_failures >= max(3, len(active.active) // 2):
+                    print(
+                        f"[WARN] high failure rate this loop for venue={v.name} "
+                        f"(failures={loop_failures}, successes={loop_successes}). "
+                        f"Cooling down {GLOBAL_COOLDOWN_SECONDS}s."
+                    )
+                    time.sleep(GLOBAL_COOLDOWN_SECONDS)
+                # ------------------------------------------
+
+            # Normal polling interval (shared)
             time.sleep(settings.POLL_INTERVAL)

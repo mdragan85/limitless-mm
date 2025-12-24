@@ -45,6 +45,7 @@ class ActiveInstruments:
                 "market_id": m.market_id,
                 "instrument_id": "BOOK",
                 "slug": m.slug,
+                "poll_key": m.slug,  
                 "underlying": m.underlying,
                 "expiration": m.raw.get("expirationTimestamp"),
             }
