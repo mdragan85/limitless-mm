@@ -80,40 +80,66 @@ class PolymarketClient:
 
     def discover_instruments(self, rules: list[dict]) -> list[dict]:
         """
-        Polymarket discovery v1.
+        Polymarket discovery v2.
 
-        Returns a list of instrument dicts (one per CLOB token), e.g.
-        {
-          "venue": "polymarket",
-          "market_id": "...",
-          "instrument_id": "<token_id>",
-          "poll_key": "<token_id>",                 # simplest form for now
-          "slug": "...",
-          "question": "...",
-          "expiration": <end_ms>,
-          "minutes_to_expiry": <float>,
-          "outcome": "Up"/"Down"/"Yes"/"No"/...,
-          "outcome_price": "0.495" (optional),
-          "rule": "<rule_name>",
-          "raw_market": {...}                       # optional but handy for debugging
-        }
+        Key fixes vs v1:
+        - Preserve slug -> rule association (no more BTC rule claiming XRP slugs)
+        - Add active-window filter using explicit start time fields from raw_market
+        (eventStartTime / startDateIso / startDate), with configurable lead_ms
         """
-        # 1) Search -> collect slugs
-        slugs: set[str] = set()
-        for rule in rules:
-            for q in rule.get("queries", []):
+
+        # ---------- helpers (local; keep method self-contained) ----------
+        def _iso_to_ms(s: str) -> int | None:
+            try:
+                s = s.replace("Z", "+00:00")
+                dt = datetime.fromisoformat(s)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return int(dt.timestamp() * 1000)
+            except Exception:
+                return None
+
+        def _get_start_ms(raw_market: dict, fields: list[str]) -> int | None:
+            for k in fields:
+                v = raw_market.get(k)
+                if not v:
+                    continue
+                if isinstance(v, (int, float)):
+                    vv = int(v)
+                    # seconds vs ms heuristic
+                    return vv * 1000 if vv < 10_000_000_000 else vv
+                if isinstance(v, str):
+                    ms = _iso_to_ms(v)
+                    if ms is not None:
+                        return ms
+            return None
+
+        now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+
+        # -----------------------------------------------------------------
+        # 1) Search per rule -> build mapping slug -> list of rule indices
+        # -----------------------------------------------------------------
+        slug_to_rule_idxs: dict[str, set[int]] = {}
+
+        for ridx, rule in enumerate(rules):
+            for q in rule.get("queries", []) or []:
                 blob = self.public_search(q)
-                self._collect_market_slugs(blob, slugs)
+                found: set[str] = set()
+                self._collect_market_slugs(blob, found)
+                for slug in found:
+                    slug_to_rule_idxs.setdefault(slug, set()).add(ridx)
 
         out: list[dict] = []
 
-        # 2) Hydrate -> filter -> emit instruments
-        for slug in sorted(slugs):
+        # -----------------------------------------------------------------
+        # 2) Hydrate each unique slug once -> apply only its associated rules
+        # -----------------------------------------------------------------
+        for slug in sorted(slug_to_rule_idxs.keys()):
             d = self.get_market_by_slug(slug)
             if not d:
                 continue
 
-            # Hard filters from hydrated market (source-of-truth)
+            # Market-level hard filters (source-of-truth)
             if not d.get("active", False):
                 continue
             if d.get("closed", False):
@@ -126,55 +152,64 @@ class PolymarketClient:
             end_ms = self._parse_end_ms(d)
             if end_ms is None:
                 continue
-
             minutes = self._minutes_to_expiry(end_ms)
 
+            # Build a stable "title" string for must_contain checks
             title = f"{d.get('question') or d.get('title') or ''} {slug}".lower()
 
-            # Parse token ids and outcomes (both are JSON strings in your example)
+            # Parse token ids and outcomes
             token_ids = self._parse_json_list_field(d.get("clobTokenIds"))
             outcomes = self._parse_json_list_field(d.get("outcomes"))
             outcome_prices = self._parse_json_list_field(d.get("outcomePrices"))
 
-            # Need at least token ids
             if len(token_ids) < 2:
                 continue
 
-            # If outcomes missing, fabricate stable labels
             if not outcomes or len(outcomes) != len(token_ids):
                 outcomes = [f"OUTCOME_{i}" for i in range(len(token_ids))]
 
-            # outcomePrices may be missing or length mismatch; handle gracefully
             if not outcome_prices or len(outcome_prices) != len(token_ids):
                 outcome_prices = [None for _ in range(len(token_ids))]
 
-            # Apply rule-based filters (expiry window + contains rules)
-            for rule in rules:
+            question = d.get("question") or d.get("title") or ""
+            market_id = str(d.get("id"))
+
+            # Apply only rules that actually found this slug
+            for ridx in sorted(slug_to_rule_idxs[slug]):
+                rule = rules[ridx]
+
+                # Expiry window
                 min_m = rule.get("min_minutes_to_expiry", float("-inf"))
                 max_m = rule.get("max_minutes_to_expiry", float("inf"))
-
                 if minutes < min_m or minutes > max_m:
                     continue
 
+                # Optional contains filters
                 must_contain = rule.get("must_contain", []) or []
                 must_not = rule.get("must_not_contain", []) or []
+                if must_contain and not any(k.lower() in title for k in must_contain):
+                    continue
+                if must_not and any(k.lower() in title for k in must_not):
+                    continue
 
-                if must_contain:
-                    if not any(k.lower() in title for k in must_contain):
-                        continue
-                if must_not:
-                    if any(k.lower() in title for k in must_not):
-                        continue
+                # Active window filter using explicit start time fields
+                # (no inference, fully configurable per rule)
+                lead_ms = int(rule.get("lead_ms", 60_000))
+                start_fields = rule.get("start_time_fields", ["eventStartTime", "startDateIso", "startDate"])
+                start_ms = _get_start_ms(d, start_fields)
 
-                # Emit 1 instrument per token/outcome
-                market_id = str(d.get("id"))
-                question = d.get("question") or d.get("title") or ""
+                if start_ms is None:
+                    continue
+                if not (start_ms - lead_ms <= now_ms < end_ms):
+                    continue
+
+                # Emit 1 instrument per token/outcome for this rule
                 for i, token_id in enumerate(token_ids):
                     out.append({
                         "venue": self.venue,
                         "market_id": market_id,
-                        "instrument_id": str(token_id),      # token_id is the identity
-                        "poll_key": str(token_id),           # simplest for now
+                        "instrument_id": str(token_id),
+                        "poll_key": str(token_id),
                         "slug": slug,
                         "question": question,
                         "expiration": end_ms,
@@ -182,7 +217,7 @@ class PolymarketClient:
                         "outcome": outcomes[i],
                         "outcome_price": outcome_prices[i],
                         "rule": rule.get("name"),
-                        "raw_market": d,                     # keep for debugging; can drop later
+                        "raw_market": d,  # keep for debugging; can drop later
                     })
 
         return out
