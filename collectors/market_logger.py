@@ -15,7 +15,6 @@ from datetime import datetime
 from pathlib import Path
 
 from config.settings import settings
-from collectors.active_instruments import ActiveInstruments
 from collectors.venue_runtime import VenueRuntime
 from storage.jsonl_writer import JsonlRotatingWriter
 
@@ -60,10 +59,7 @@ class MarketLogger:
             )
 
             # Kept for now as a small wrapper around a dict; poller treats this as in-memory only.
-            active = ActiveInstruments(
-                v.out_dir / "state" / "active_instruments.json",
-                settings.EXPIRE_GRACE_SECONDS,
-            )
+            active: dict[str, dict] = {}
 
             snapshot_path = v.out_dir / "state" / "active_instruments.snapshot.json"
 
@@ -139,18 +135,19 @@ class MarketLogger:
                 print(f"[POLLER][WARN] snapshot malformed venue={vs['venue'].name}: no instruments dict")
                 return
 
-            active: ActiveInstruments = vs["active"]
+            active: dict[str, dict] = vs["active"]
 
-            old_keys = set(active.active.keys())
+            old_keys = set(active.keys())
             new_keys = set(instruments.keys())
 
-            # Replace in-memory active set with snapshot
-            active.active = instruments
+            # Replace in-memory active set with snapshot (in-place)
+            active.clear()
+            active.update(instruments)
 
             # Prune fail_state so it doesn't grow forever
             fail_state = vs["fail_state"]
             for k in list(fail_state.keys()):
-                if k not in active.active:
+                if k not in active:
                     del fail_state[k]
 
             vs["snapshot_mtime"] = mtime
@@ -161,9 +158,9 @@ class MarketLogger:
 
             print(
                 f"[POLLER] loaded snapshot venue={vs['venue'].name} "
-                f"count={len(active.active)} added={added} removed={removed} "
+                f"count={len(active)} added={added} removed={removed} "
                 f"asof={vs['snapshot_asof']}"
-            )
+                )
 
         except Exception as exc:
             # Poller should never die because snapshot read hiccupped
@@ -188,7 +185,7 @@ class MarketLogger:
         loop_failures = 0
         loop_successes = 0
 
-        for ikey, info in active.active.items():
+        for ikey, info in active.items():
             st = fail_state.get(ikey, {"count": 0, "next_ok": 0.0, "last_log": 0.0})
             if now_mono < st["next_ok"]:
                 continue
@@ -249,7 +246,7 @@ class MarketLogger:
         active = vs["active"]
         v = vs["venue"]
 
-        if failures >= max(3, len(active.active) // 2):
+        if failures >= max(3, len(active) // 2):
             cooldown = 10
             vs["cooldown_until"] = now_mono + cooldown
             print(

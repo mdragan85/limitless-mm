@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 from config.settings import settings
-from collectors.active_instruments import ActiveInstruments
 from collectors.venue_runtime import VenueRuntime
 from storage.jsonl_writer import JsonlRotatingWriter
 
@@ -58,31 +57,33 @@ class DiscoveryService:
                 settings.FSYNC_SECONDS,
             )
 
-            active_path = v.out_dir / "state" / "active_instruments.json"
             snap_path = v.out_dir / "state" / self.snapshot_name
 
-            active = ActiveInstruments(active_path, settings.EXPIRE_GRACE_SECONDS)
-
             instruments = v.discover_fn()
+            
+            # Build active dict directly from discovered instruments (no persistence)
+            active: dict[str, dict] = {}
+
+            for inst in instruments:
+                ikey = inst.get("instrument_key") or inst.get("poll_key") or inst.get("instrument_id")
+                if not ikey:
+                    continue
+                active[str(ikey)] = inst
 
             # NEW: write market metadata here (discovery-owned)
             for inst in instruments:
                 markets_writer.write(inst)
 
-            active.refresh_from_instruments(instruments)
-            active.prune()
-            active.save()
-
             snapshot = {
                 "asof_ts_utc": now_iso,
                 "venue": v.name,
-                "count": len(active.active),
-                "instruments": active.active,
+                "count": len(active),
+                "instruments": active,
             }
 
             _atomic_write_json(snap_path, snapshot)
 
-            print(f"[DISCOVERY] venue={v.name} instruments={len(active.active)} snapshot={snap_path}")
+            print(f"[DISCOVERY] venue={v.name} instruments={len(active)} snapshot={snap_path}")
 
 
     def run_forever(self) -> None:

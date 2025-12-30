@@ -27,6 +27,7 @@ A **multi-venue polling service**.
 
 Responsibilities:
 - Load per-venue snapshots from discovery (`active_instruments.snapshot.json`)
+- Maintain an in-memory dictionary of active instruments (no persisted active state)
 - Maintain in-memory backoff per instrument and cooldown per venue
 - Poll order books using the venue client and an opaque `poll_key`
 - Write JSONL logs under rotating directories
@@ -37,8 +38,10 @@ Non-responsibilities:
 
 Key properties:
 - Snapshot reload is non-fatal (poller never dies due to snapshot issues)
+- Snapshot state is treated as read-only and authoritative
 - Backoff uses monotonic time to avoid system clock jumps
 - Per-venue cooldown prevents one venue outage from blocking the other
+- Order book logs may span multiple files per day; ordering is by record timestamp, not file name
 
 ### DiscoveryService (Discovery)
 
@@ -46,11 +49,15 @@ A **multi-venue discovery runner**.
 
 Responsibilities:
 - Run `discover_fn` for each venue on a slower cadence
-- Produce a dict of instruments keyed by `instrument_key`
+- Discover the full active set of instruments for the venue on each run
+- Derive a stable `instrument_key` per instrument (see below)
 - Write:
   - `state/active_instruments.snapshot.json` (atomic overwrite)
   - `markets/` JSONL logs (metadata / instrument records) on discovery cadence
-  - Optionally: `state/active_instruments.json` (legacy cache; can be removed)
+
+Notes:
+- Discovery is the sole owner of active-set determination
+- No active state is persisted beyond the snapshot file
 
 ### VenueRuntime
 
@@ -92,10 +99,15 @@ Common optional fields:
 A stable `instrument_key` is defined as:
 
 ```
-<venue>:<market_id>:<instrument_id>
+<venue>:<poll_key>
 ```
 
-This is used as the primary key in snapshots and in-memory state.
+Rationale:
+- `poll_key` is the opaque identifier required by the venue client to fetch an order book
+- It is stable, unique per order book, and already present in discovery output
+- Using `poll_key` avoids venue-specific key derivation logic
+
+This key is used as the primary key in snapshots and all in-memory poller state.
 
 ## Snapshot Contract (Discovery → Poller)
 
@@ -118,7 +130,7 @@ Shape:
 ```
 
 Notes:
-- Written via atomic replace (write temp + rename) so poller never sees partial content
+- Written via atomic replace (write temp + rename) so the poller never sees partial content
 - Poller treats this as read-only “source of truth”
 - Poller may keep a cached copy in memory until a newer snapshot arrives
 
@@ -128,8 +140,8 @@ Notes:
 - Discovery input: configured `settings.UNDERLYINGS`
 - Discovery output: **one instrument per CLOB market**
 - Polling:
-  - `instrument_id = "BOOK"`
   - `poll_key = market.slug`
+  - `instrument_id = "BOOK"`
 - Filtering (current):
   - Exclude AMM markets (e.g., `tradeType != "clob"` or `tokens is None`)
   - Keep funded, not-expired markets (as configured)
@@ -138,7 +150,7 @@ Notes:
 - Discovery via Gamma search + hydration
 - Each market has **two CLOBs** (YES/NO), modeled as **two instruments**
 - Polling:
-  - `poll_key = asset_id` (token/asset identifier)
+  - `poll_key = asset_id` (token / CLOB identifier)
   - `market_id = Gamma market id`
   - `instrument_id = asset_id`
 
@@ -149,25 +161,28 @@ For each venue under `settings.OUTPUT_DIR`:
 - `orderbooks/date=YYYY-MM-DD/`  
   Rotating JSONL logs of order book snapshots
 
+  Notes:
+  - Files are named `orderbooks.part-XXXX.jsonl`
+  - Part numbers are monotonic across process restarts
+  - Downstream consumers must sort by record timestamp for strict ordering
+
 - `markets/date=YYYY-MM-DD/`  
   Discovery cadence JSONL logs of discovered instrument/market metadata
 
 - `state/active_instruments.snapshot.json`  
-  Atomic snapshot consumed by poller
-
-- (optional / legacy) `state/active_instruments.json`  
-  Previously used for restart continuity; planned removal in favor of snapshot-only
+  Atomic snapshot consumed by the poller
 
 ## Current Status
 
 - Limitless: ~8 active CLOB markets (varies with discovery window)
 - Polymarket: ~32 instruments (two books per market)
 - Total: ~40 order books polled across venues
-- Discovery and polling are decoupled; poller cadence can be increased independently
+- Discovery and polling are fully decoupled; poller cadence can be increased independently
 
 ## Next Planned Cleanup
 
-- Remove `ActiveInstruments` from the poller completely (snapshot-only → in-memory dict)
-- Ensure discovery semantics explicitly define whether the active set is:
-  - “replace each run” (strict) vs
-  - “grace window” (sticky)
+- Optional: introduce explicit discovery semantics for
+  - strict replacement vs
+  - grace-window (sticky) active sets
+- Optional: downstream compaction or bucketing of order book logs for analytics
+

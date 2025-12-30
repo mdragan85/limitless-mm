@@ -1,3 +1,4 @@
+import re
 import json
 import os
 import time
@@ -9,19 +10,23 @@ class JsonlRotatingWriter:
     Append-only JSONL writer with time-based file rotation and periodic fsync.
 
     Responsibilities:
-    - Write one JSON record per line (JSONL format)
-    - Rotate output files on a fixed time interval
-    - Periodically fsync to balance durability and throughput
+        - Write one JSON record per line (JSONL format)
+        - Rotate output files on a fixed time interval
+        - Ensure monotonic file part numbering across process restarts
+        - Periodically fsync to balance durability and throughput
 
     Non-responsibilities:
-    - Schema validation or record transformation
-    - Atomic multi-file transactions
-    - Log retention or cleanup policies
+        - Schema validation or record transformation
+        - Atomic multi-file transactions
+        - Log retention, compaction, or cleanup policies
+        - Strict global ordering guarantees (ordering is by record timestamp)
 
     Design notes:
-    - Rotation is time-based, not size-based, to simplify downstream readers.
-    - fsync is decoupled from per-write flushes to reduce I/O overhead while
-      still providing bounded data-loss windows on crash.
+        - Rotation is time-based, not size-based, to simplify downstream readers.
+        - On startup, the writer resumes at the next available part number to avoid
+        appending to previously closed files after a restart.
+        - fsync is decoupled from per-write flushes to reduce I/O overhead while still
+        providing bounded data-loss windows on crash.
     """
 
     def __init__(self, directory: Path, prefix: str, rotate_minutes: int, fsync_seconds: int):
@@ -48,8 +53,28 @@ class JsonlRotatingWriter:
         # Active file handle
         self.fh = None
 
+        # NEW: resume part counter from disk so restarts don't append to part-0000
+        self._init_part_counter()
+
         # Open the initial output file
         self._open_new()
+
+    def _init_part_counter(self) -> None:
+        pat = re.compile(rf"^{re.escape(self.prefix)}\.part-(\d+)\.jsonl$")
+        max_part = -1
+        for p in self.dir.iterdir():
+            if not p.is_file():
+                continue
+            m = pat.match(p.name)
+            if not m:
+                continue
+            try:
+                n = int(m.group(1))
+                if n > max_part:
+                    max_part = n
+            except ValueError:
+                pass
+        self.part = max_part + 1
 
     def _open_new(self):
         """

@@ -3,7 +3,7 @@ import time
 from pathlib import Path
 
 
-class ActiveInstruments:
+class ActiveInstruments___DELETE:
     """
     Persistence + pruning for the set of "currently active" instruments.
 
