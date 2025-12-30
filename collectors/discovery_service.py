@@ -11,6 +11,7 @@ from typing import List, Dict, Any
 from config.settings import settings
 from collectors.active_instruments import ActiveInstruments
 from collectors.venue_runtime import VenueRuntime
+from storage.jsonl_writer import JsonlRotatingWriter
 
 
 def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
@@ -48,12 +49,26 @@ class DiscoveryService:
         for v in self.venues:
             v.out_dir.mkdir(parents=True, exist_ok=True)
 
+            current_date = datetime.utcnow().strftime("%Y-%m-%d")
+
+            markets_writer = JsonlRotatingWriter(
+                v.out_dir / "markets" / f"date={current_date}",
+                "markets",
+                settings.ROTATE_MINUTES,
+                settings.FSYNC_SECONDS,
+            )
+
             active_path = v.out_dir / "state" / "active_instruments.json"
             snap_path = v.out_dir / "state" / self.snapshot_name
 
             active = ActiveInstruments(active_path, settings.EXPIRE_GRACE_SECONDS)
 
             instruments = v.discover_fn()
+
+            # NEW: write market metadata here (discovery-owned)
+            for inst in instruments:
+                markets_writer.write(inst)
+
             active.refresh_from_instruments(instruments)
             active.prune()
             active.save()
@@ -67,10 +82,8 @@ class DiscoveryService:
 
             _atomic_write_json(snap_path, snapshot)
 
-            print(
-                f"[DISCOVERY] venue={v.name} instruments={len(active.active)} "
-                f"snapshot={snap_path}"
-            )
+            print(f"[DISCOVERY] venue={v.name} instruments={len(active.active)} snapshot={snap_path}")
+
 
     def run_forever(self) -> None:
         while True:

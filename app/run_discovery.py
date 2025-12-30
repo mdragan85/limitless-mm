@@ -18,25 +18,38 @@ poly_client = PolymarketClient()
 def discover_polymarket():
     return poly_client.discover_instruments(POLYMARKET_RULES)
 
-
 def discover_limitless():
     instruments = []
+
     for u in settings.UNDERLYINGS:
         markets = limitless_client.discover_markets(u)
         for m in markets:
+            raw = m.raw or {}
+
+            # Only include markets that actually have an orderbook
+            if raw.get("tradeType") != "clob":
+                continue
+            if not raw.get("tokens"):
+                continue
+            if raw.get("expired") is True:
+                continue
+            if raw.get("status") not in ("FUNDED", "ACTIVE"):  # keep FUNDED at least
+                continue
+
             instruments.append(
                 {
                     "venue": "limitless",
                     "market_id": m.market_id,
                     "instrument_id": "BOOK",
-                    "poll_key": m.slug,  # Limitless polls by slug
+                    "poll_key": m.slug,
                     "slug": m.slug,
                     "underlying": m.underlying,
-                    "expiration": m.raw.get("expirationTimestamp"),
+                    "expiration": raw.get("expirationTimestamp"),
                     "title": getattr(m, "title", None),
-                    "raw": m.raw,
+                    "raw": raw,
                 }
             )
+
     return instruments
 
 
