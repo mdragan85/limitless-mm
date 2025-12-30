@@ -42,12 +42,12 @@ class DiscoveryService:
     venues: List[VenueRuntime]
     snapshot_name: str = "active_instruments.snapshot.json"
 
+
     def run_once(self) -> None:
         now_iso = datetime.utcnow().isoformat()
 
         for v in self.venues:
             v.out_dir.mkdir(parents=True, exist_ok=True)
-
             current_date = datetime.utcnow().strftime("%Y-%m-%d")
 
             markets_writer = JsonlRotatingWriter(
@@ -57,33 +57,40 @@ class DiscoveryService:
                 settings.FSYNC_SECONDS,
             )
 
-            snap_path = v.out_dir / "state" / self.snapshot_name
+            try:
+                snap_path = v.out_dir / "state" / self.snapshot_name
 
-            instruments = v.discover_fn()
-            
-            # Build active dict directly from discovered instruments (no persistence)
-            active: dict[str, dict] = {}
+                instruments = v.discover_fn()
 
-            for inst in instruments:
-                ikey = inst.get("instrument_key") or inst.get("poll_key") or inst.get("instrument_id")
-                if not ikey:
-                    continue
-                active[str(ikey)] = inst
+                # Build active dict directly from discovered instruments (no persistence)
+                active: dict[str, dict] = {}
+                for inst in instruments:
+                    ikey = inst.get("instrument_key") or inst.get("poll_key") or inst.get("instrument_id")
+                    if not ikey:
+                        continue
+                    active[str(ikey)] = inst
 
-            # NEW: write market metadata here (discovery-owned)
-            for inst in instruments:
-                markets_writer.write(inst)
+                # Write market metadata here (discovery-owned)
+                for inst in instruments:
+                    markets_writer.write(inst)
 
-            snapshot = {
-                "asof_ts_utc": now_iso,
-                "venue": v.name,
-                "count": len(active),
-                "instruments": active,
-            }
+                snapshot = {
+                    "asof_ts_utc": now_iso,
+                    "venue": v.name,
+                    "count": len(active),
+                    "instruments": active,
+                }
 
-            _atomic_write_json(snap_path, snapshot)
+                _atomic_write_json(snap_path, snapshot)
 
-            print(f"[DISCOVERY] venue={v.name} instruments={len(active)} snapshot={snap_path}")
+                print(f"[DISCOVERY] venue={v.name} instruments={len(active)} snapshot={snap_path}")
+
+            finally:
+                # Always close to avoid leaking file handles across long-running loops
+                try:
+                    markets_writer.close()
+                except Exception:
+                    pass
 
 
     def run_forever(self) -> None:

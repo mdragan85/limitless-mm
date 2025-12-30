@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 
 @dataclass
@@ -13,4 +13,4 @@ class VenueRuntime:
     client: object
     normalizer: Callable
     out_dir: Path
-    discover_fn: Callable  
+    discover_fn: Optional[Callable] = None  

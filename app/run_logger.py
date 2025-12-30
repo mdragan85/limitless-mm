@@ -46,7 +46,7 @@ def main():
         client=limitless_client,
         normalizer=normalize_orderbook,
         out_dir=Path(settings.OUTPUT_DIR) / "limitless",
-        discover_fn=discover_limitless,  # NEW
+        discover_fn=None,  # NEW
     )
 
     polymarket = VenueRuntime(
@@ -54,7 +54,7 @@ def main():
         client=poly_client,
         normalizer=lambda rec, **kwargs: rec,
         out_dir=Path(settings.OUTPUT_DIR) / "polymarket",
-        discover_fn=discover_polymarket,
+        discover_fn=None,
     )
 
     logger = MarketLogger(venues=[limitless, polymarket])
