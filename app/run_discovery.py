@@ -1,5 +1,4 @@
-# app/run_discovery.py
-
+from datetime import datetime
 from pathlib import Path
 
 from config.settings import settings, POLYMARKET_RULES
@@ -14,6 +13,19 @@ from venues.polymarket.client import PolymarketClient
 limitless_client = LimitlessVenueClient()
 poly_client = PolymarketClient()
 
+
+
+def disp_boot_banner_discovery(venues):
+    root = Path(settings.OUTPUT_DIR)
+    print(f"[BOOT][DISCOVERY] OUTPUT_DIR={settings.OUTPUT_DIR} resolved={root.resolve()}")
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    for v in venues:
+        out = v.out_dir.resolve()
+        snap = (out / "state" / "active_instruments.snapshot.json").resolve()
+        mk_dir = (out / "markets" / f"date={today}").resolve()
+        print(f"[BOOT][DISCOVERY] venue={v.name} out_dir={out}")
+        print(f"[BOOT][DISCOVERY] venue={v.name} snapshot={snap}")
+        print(f"[BOOT][DISCOVERY] venue={v.name} markets_dir={mk_dir}")
 
 def discover_polymarket():
     return poly_client.discover_instruments(POLYMARKET_RULES)
@@ -69,8 +81,10 @@ def main():
         out_dir=Path(settings.OUTPUT_DIR) / "polymarket",
         discover_fn=discover_polymarket,
     )
-
-    svc = DiscoveryService(venues=[limitless, polymarket])
+    
+    venues = [limitless, polymarket]
+    disp_boot_banner_discovery(venues)
+    svc = DiscoveryService(venues=venues)
     svc.run_forever()
 
 
