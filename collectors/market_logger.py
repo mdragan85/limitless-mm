@@ -5,6 +5,8 @@ Discovers markets, filters them, polls snapshots, and writes logs.
 
 import json
 import time
+import os
+
 from datetime import datetime
 from pathlib import Path
 
@@ -99,6 +101,7 @@ class MarketLogger:
         One-time setup: writers, ActiveInstruments, and per-venue counters.
         """
         venue_state = {}
+
         for v in self.venues:
             current_date = datetime.utcnow().strftime("%Y-%m-%d")
 
@@ -121,16 +124,23 @@ class MarketLogger:
                 settings.EXPIRE_GRACE_SECONDS,
             )
 
+            snapshot_path = v.out_dir / "state" / "active_instruments.snapshot.json"
+
             venue_state[v.name] = {
                 "venue": v,
                 "current_date": current_date,
                 "markets_writer": markets_writer,
                 "books_writer": books_writer,
                 "active": active,
-                "last_discover": 0.0,
+
+                # snapshot reload state
+                "snapshot_path": snapshot_path,
+                "snapshot_mtime": 0.0,
+
                 "fail_state": {},
-                "cooldown_until": 0.0,  # NEW: replaces blocking sleep()
+                "cooldown_until": 0.0,
             }
+
         return venue_state
 
     def _rollover_if_needed(self, vs: dict) -> None:
@@ -164,6 +174,59 @@ class MarketLogger:
                 settings.ROTATE_MINUTES,
                 settings.FSYNC_SECONDS,
             )
+
+    def _maybe_reload_snapshot(self, vs: dict) -> None:
+        """
+        If the discovery snapshot has changed, load it and replace active instruments
+        for this venue.
+
+        This keeps polling independent of discovery latency.
+        """
+        snap_path: Path = vs["snapshot_path"]
+        try:
+            if not snap_path.exists():
+                return
+
+            st = os.stat(snap_path)
+            mtime = st.st_mtime
+            if mtime <= vs["snapshot_mtime"]:
+                return
+
+            payload = json.loads(snap_path.read_text(encoding="utf-8"))
+            instruments = payload.get("instruments")
+            if not isinstance(instruments, dict):
+                print(f"[POLL][WARN] snapshot malformed for venue={vs['venue'].name}: no instruments dict")
+                return
+
+            active: ActiveInstruments = vs["active"]
+
+            old_keys = set(active.active.keys())
+            new_keys = set(instruments.keys())
+
+            active.active = instruments
+            # optional: extra safety in case discovery didn't prune for some reason
+            active.prune()
+            active.save()
+
+            # prune fail_state so it doesn't grow forever
+            fail_state = vs["fail_state"]
+            for k in list(fail_state.keys()):
+                if k not in active.active:
+                    del fail_state[k]
+
+            added = len(new_keys - old_keys)
+            removed = len(old_keys - new_keys)
+
+            vs["snapshot_mtime"] = mtime
+            print(
+                f"[POLL] loaded snapshot venue={vs['venue'].name} "
+                f"count={len(active.active)} added={added} removed={removed} "
+                f"asof={payload.get('asof_ts_utc')}"
+            )
+
+        except Exception as exc:
+            # Poller should never die because snapshot read hiccupped
+            print(f"[POLL][WARN] failed to reload snapshot venue={vs['venue'].name}: {type(exc).__name__}: {exc}")
 
     def _maybe_discover(self, vs: dict, now: float) -> None:
         """
@@ -284,6 +347,7 @@ class MarketLogger:
     # Main loop (orchestrator)
     # -------------------------
     def run(self):
+
         venue_state = self._init_venue_state()
 
         while True:
@@ -291,7 +355,7 @@ class MarketLogger:
 
             for vs in venue_state.values():
                 self._rollover_if_needed(vs)
-                self._maybe_discover(vs, now)
+                self._maybe_reload_snapshot(vs)
 
                 successes, failures = self._poll_once(vs, now_ts=now)
                 self._maybe_apply_cooldown(vs, successes=successes, failures=failures, now=now)
