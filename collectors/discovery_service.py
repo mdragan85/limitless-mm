@@ -83,7 +83,7 @@ class DiscoveryService:
 
                 _atomic_write_json(snap_path, snapshot)
 
-                print(f"[DISCOVERY] venue={v.name} instruments={len(active)} snapshot={snap_path}")
+                print(f"<DiscoveryApp>: venue={v.name} instruments={len(active)} snapshot={snap_path}")
 
             finally:
                 # Always close to avoid leaking file handles across long-running loops
@@ -100,7 +100,7 @@ class DiscoveryService:
                 self.run_once()
             except Exception as exc:
                 # discovery should never kill the process because one venue hiccuped
-                print(f"[DISCOVERY][WARN] run_once failed: {type(exc).__name__}: {exc}")
+                print(f"<DiscoveryApp|Warning>: run_once failed: {type(exc).__name__}: {exc}")
 
             elapsed = time.time() - start
             sleep_for = max(1.0, settings.DISCOVER_EVERY_SECONDS - elapsed)

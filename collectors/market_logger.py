@@ -107,7 +107,7 @@ class MarketLogger:
                 settings.ROTATE_MINUTES,
                 settings.FSYNC_SECONDS,
             )
-            print(f"[POLLER] rollover venue={v.name} {old_date} -> {new_date}")
+            print(f"<PollApp>: rollover venue={v.name} {old_date} -> {new_date}")
 
     def _maybe_reload_snapshot(self, vs: dict) -> None:
         """
@@ -132,7 +132,7 @@ class MarketLogger:
             payload = json.loads(snap_path.read_text(encoding="utf-8"))
             instruments = payload.get("instruments")
             if not isinstance(instruments, dict):
-                print(f"[POLLER][WARN] snapshot malformed venue={vs['venue'].name}: no instruments dict")
+                print(f"<PollApp|Warning>: snapshot malformed venue={vs['venue'].name}: no instruments dict")
                 return
 
             active: dict[str, dict] = vs["active"]
@@ -157,14 +157,14 @@ class MarketLogger:
             removed = len(old_keys - new_keys)
 
             print(
-                f"[POLLER] loaded snapshot venue={vs['venue'].name} "
+                f"<PollApp>: loaded snapshot venue={vs['venue'].name} "
                 f"count={len(active)} added={added} removed={removed} "
                 f"asof={vs['snapshot_asof']}"
                 )
 
         except Exception as exc:
             # Poller should never die because snapshot read hiccupped
-            print(f"[POLLER][WARN] failed to reload snapshot venue={vs['venue'].name}: {type(exc).__name__}: {exc}")
+            print(f"<PollApp|Warning>: failed to reload snapshot venue={vs['venue'].name}: {type(exc).__name__}: {exc}")
 
     def _poll_once(self, vs: dict, now_mono: float) -> tuple[int, int]:
         """
@@ -274,7 +274,7 @@ class MarketLogger:
 
                     successes, failures = self._poll_once(vs, now_mono=now_mono)
                     print(
-                        f"[POLLER] venue={vs['venue'].name} "
+                        f"<PollApp>: venue={vs['venue'].name} "
                         f"saved={successes} failed={failures} total={successes + failures}"
                     )
 
@@ -283,7 +283,7 @@ class MarketLogger:
                 time.sleep(settings.POLL_INTERVAL)
 
         except KeyboardInterrupt:
-            print("[POLLER] shutdown requested (KeyboardInterrupt)")
+            print("<PollApp>: shutdown requested (KeyboardInterrupt)")
         finally:
             # Best-effort cleanup
             for vname, vs in venue_state.items():
