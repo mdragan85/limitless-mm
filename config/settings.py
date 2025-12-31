@@ -22,24 +22,19 @@ class AppSettings:
     Settings for connecting to the Limitless API and logging behavior.
     """
 
-    # Logging behavior
-    FULL_ORDERBOOK = True
-    ROTATE_MINUTES = 10
-    FSYNC_SECONDS = 5
-    DISCOVER_EVERY_SECONDS = 60
-    EXPIRE_GRACE_SECONDS = 120
+    # JSonl Writing Settings
+    ROTATE_MINUTES = 10             # How often to rotate into a new file
+    FSYNC_SECONDS = 5               # Force sync file every N seconds (?check?)
 
-    # How often (in seconds) to poll orderbooks
-    POLL_INTERVAL: float = float(os.getenv("LIMITLESS_POLL_INTERVAL", "2.0"))
+    # Discovery Settings
+    DISCOVER_EVERY_SECONDS = 60     # How often to run Discovery
 
-    # Max number of markets per underlying to log
-    MAX_MARKETS_PER_UNDERLYING: int = int(
-        os.getenv("LIMITLESS_MAX_MARKETS_PER_UNDERLYING", "10")
-    )
-	
+    # Orderbook Logging Settings
+    FULL_ORDERBOOK = True           # Full book vs. top of book
+    POLL_INTERVAL = 1.0              # How often (in seconds) to poll orderbooks
+
     # Where to write logs
-    OUTPUT_DIR: Path = Path(os.getenv("LIMITLESS_OUTPUT_DIR", ".outputs/logs"))
-
+    OUTPUT_DIR: Path = Path(os.getenv("OUTPUT_DIR", ".outputs/logs"))
 
 
 # Create a single config instance for import

@@ -88,8 +88,6 @@ class LimitlessAPI:
         ]
 
         loggable = [m for m in markets if m.is_loggable()]
-        if settings.MAX_MARKETS_PER_UNDERLYING:
-            return loggable[: settings.MAX_MARKETS_PER_UNDERLYING]
         return loggable
 
 
