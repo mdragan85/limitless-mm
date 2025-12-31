@@ -9,6 +9,7 @@ IMPORTANT:
 - It forwards calls verbatim to existing code.
 """
 
+from typing import Any, Dict, List 
 from venues.limitless.api import LimitlessAPI
 from venues.limitless.market import LimitlessMarket
 
@@ -36,6 +37,54 @@ class LimitlessVenueClient:
             list[LimitlessMarket]
         """
         return self.api.discover_markets(underlying)
+
+    def discover_instruments(self, rules: list[str]) -> list[dict]:
+        """
+        Discover loggable Limitless instruments across a list of underlyings.
+
+        Output contract (shared across venues):
+        - expiration is epoch milliseconds (int)
+        - one instrument per market (Limitless YES/NO share an orderbook)
+
+        NOTE: This method intentionally matches existing behavior from
+        app/run_discovery.py (do not change filters yet).
+        
+        rules: currently a list of underlyings; intentionally shaped to match
+        Polymarket's discovery interface.
+        """
+        instruments: list[dict] = []
+
+        for u in rules:
+            markets = self.discover_markets(u)
+
+            for m in markets:
+                raw = m.raw or {}
+
+                # Only include markets that actually have an orderbook
+                if raw.get("tradeType") != "clob":
+                    continue
+                if not raw.get("tokens"):
+                    continue
+                if raw.get("expired") is True:
+                    continue
+                if raw.get("status") not in ("FUNDED", "ACTIVE"):  # keep FUNDED at least
+                    continue
+
+                instruments.append(
+                    {
+                        "venue": "limitless",
+                        "market_id": m.market_id,
+                        "instrument_id": "BOOK",
+                        "poll_key": m.slug,
+                        "slug": m.slug,
+                        "underlying": m.underlying,
+                        "expiration": raw.get("expirationTimestamp"),
+                        "title": getattr(m, "title", None),
+                        "raw": raw,
+                    }
+                )
+
+        return instruments
 
     # -------------------------
     # Orderbook snapshot

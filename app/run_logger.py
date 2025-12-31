@@ -16,19 +16,6 @@ limitless_client = LimitlessVenueClient()
 poly_client = PolymarketClient()
 
 
-def disp_boot_banner_poller(venues):
-    root = Path(settings.OUTPUT_DIR)
-    print(f"[BOOT][POLLER] OUTPUT_DIR={settings.OUTPUT_DIR} resolved={root.resolve()}")
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    for v in venues:
-        out = v.out_dir.resolve()
-        snap = (out / "state" / "active_instruments.snapshot.json").resolve()
-        ob_dir = (out / "orderbooks" / f"date={today}").resolve()
-        print(f"[BOOT][POLLER] venue={v.name} out_dir={out}")
-        print(f"[BOOT][POLLER] venue={v.name} snapshot={snap}")
-        print(f"[BOOT][POLLER] venue={v.name} orderbooks_dir={ob_dir}")
-
-
 def discover_polymarket():
     return poly_client.discover_instruments(POLYMARKET_RULES)
 
@@ -72,7 +59,6 @@ def main():
     )
 
     venues = [limitless, polymarket]
-    disp_boot_banner_poller(venues)
     logger = MarketLogger(venues=venues)
     logger.run()
 

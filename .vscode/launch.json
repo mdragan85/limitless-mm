@@ -2,10 +2,10 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Run Limitless Logger",
+      "name": "Run Test Poly",
       "type": "python",
       "request": "launch",
-      "module": "scripts.run_logger",
+      "module": "app.test_poly",
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
       "justMyCode": true

@@ -18,25 +18,6 @@ load_dotenv(dotenv_path=ENV_PATH, override=False)
 # Polymarket discovery rules
 # -------------------------
 
-POLYMARKET_RULES__ = [
-    {
-        "name": "crypto_intraday",
-        "queries": [
-            "Bitcoin up or down",
-            "Ethereum up or down",
-            "Solana up or down",
-            "XRP up or down",
-        ],
-        "min_minutes_to_expiry": 5,
-        "max_minutes_to_expiry": 1440,  # < 24h
-        # optional guardrails (can be empty)
-        "must_contain": [],
-        "must_not_contain": [],
-    },
-]
-
-
-
 POLYMARKET_RULES = [
     {
         "name": "crypto_intraday_btc",
