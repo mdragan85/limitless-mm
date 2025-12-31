@@ -9,7 +9,10 @@ from venues.limitless.client import LimitlessVenueClient
 from venues.limitless.normalizer import normalize_orderbook
 
 from venues.polymarket.client import PolymarketClient
-from config.settings import POLYMARKET_RULES
+
+from config.polymarket_rules import POLYMARKET_RULES
+from config.limitless_rules import LIMITLESS_RULES
+
 
 
 limitless_client = LimitlessVenueClient()
@@ -21,22 +24,7 @@ def discover_polymarket():
 
 
 def discover_limitless():
-    instruments = []
-    for u in settings.UNDERLYINGS:
-        markets = limitless_client.discover_markets(u)
-        for m in markets:
-            instruments.append({
-                "venue": "limitless",
-                "market_id": m.market_id,
-                "instrument_id": "BOOK",
-                "poll_key": m.slug,                    # Limitless polls by slug
-                "slug": m.slug,
-                "underlying": m.underlying,
-                "expiration": m.raw.get("expirationTimestamp"),
-                "title": getattr(m, "title", None),
-                "raw": m.raw,
-            })
-    return instruments
+    return limitless_client.discover_instruments(LIMITLESS_RULES)
 
 
 def main():

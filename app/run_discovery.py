@@ -1,7 +1,9 @@
 from datetime import datetime
 from pathlib import Path
 
-from config.settings import settings, POLYMARKET_RULES
+from config.settings import settings
+from config.polymarket_rules import POLYMARKET_RULES
+from config.limitless_rules import LIMITLESS_RULES
 
 from collectors.discovery_service import DiscoveryService
 from collectors.venue_runtime import VenueRuntime
@@ -18,7 +20,7 @@ def discover_polymarket():
     return poly_client.discover_instruments(POLYMARKET_RULES)
 
 def discover_limitless():
-    return limitless_client.discover_instruments(settings.UNDERLYINGS)
+    return limitless_client.discover_instruments(LIMITLESS_RULES)
 
 def main():
     limitless = VenueRuntime(

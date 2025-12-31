@@ -8,63 +8,16 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
+from config.polymarket_rules import POLYMARKET_RULES
+from config.limitless_rules import LIMITLESS_RULES
+
 # Load .env file if present (explicit path avoids python-dotenv auto-discovery issues on newer Python)
 ENV_PATH = Path(__file__).resolve().parents[1] / ".env"  # repo_root/.env if config/ is one level down
 load_dotenv(dotenv_path=ENV_PATH, override=False)
 
 
-
-# -------------------------
-# Polymarket discovery rules
-# -------------------------
-
-POLYMARKET_RULES = [
-    {
-        "name": "crypto_intraday_btc",
-        "queries": ["Bitcoin up or down"],
-        "min_minutes_to_expiry": 5,
-        "max_minutes_to_expiry": 1440,  # < 24h
-        "lead_ms": 120_000,
-        "start_time_fields": ["eventStartTime"],
-        "must_contain": [],
-        "must_not_contain": [],
-    },
-    {
-        "name": "crypto_intraday_eth",
-        "queries": ["Ethereum up or down"],
-        "min_minutes_to_expiry": 5,
-        "max_minutes_to_expiry": 1440,
-        "lead_ms": 120_000,
-        "start_time_fields": ["eventStartTime"],
-        "must_contain": [],
-        "must_not_contain": [],
-    },
-    {
-        "name": "crypto_intraday_sol",
-        "queries": ["Solana up or down"],
-        "min_minutes_to_expiry": 5,
-        "max_minutes_to_expiry": 1440,
-        "lead_ms": 120_000,
-        "start_time_fields": ["eventStartTime"],
-        "must_contain": [],
-        "must_not_contain": [],
-    },
-    {
-        "name": "crypto_intraday_xrp",
-        "queries": ["XRP up or down"],
-        "min_minutes_to_expiry": 5,
-        "max_minutes_to_expiry": 1440,
-        "lead_ms": 120_000,
-        "start_time_fields": ["eventStartTime"],
-        "must_contain": [],
-        "must_not_contain": [],
-    },
-]
-
-
-
 @dataclass
-class LimitlessConfig:
+class AppSettings:
     """
     Settings for connecting to the Limitless API and logging behavior.
     """
@@ -76,18 +29,8 @@ class LimitlessConfig:
     DISCOVER_EVERY_SECONDS = 60
     EXPIRE_GRACE_SECONDS = 120
 
-    # API base URL
-    BASE_URL: str = os.getenv("LIMITLESS_BASE_URL", "https://api.limitless.exchange")
-
     # How often (in seconds) to poll orderbooks
     POLL_INTERVAL: float = float(os.getenv("LIMITLESS_POLL_INTERVAL", "2.0"))
-
-    # Which underlyings to log
-    UNDERLYINGS: list[str] = field(
-        default_factory=lambda: os.getenv(
-            "LIMITLESS_UNDERLYINGS", "BTC,ETH,SOL,XRP"
-        ).split(",")
-    )
 
     # Max number of markets per underlying to log
     MAX_MARKETS_PER_UNDERLYING: int = int(
@@ -98,10 +41,6 @@ class LimitlessConfig:
     OUTPUT_DIR: Path = Path(os.getenv("LIMITLESS_OUTPUT_DIR", ".outputs/logs"))
 
 
-    def __post_init__(self):
-        # Normalize underlying symbols to uppercase
-        self.UNDERLYINGS = [u.strip().upper() for u in self.UNDERLYINGS if u.strip()]
-
 
 # Create a single config instance for import
-settings = LimitlessConfig()
+settings = AppSettings()
