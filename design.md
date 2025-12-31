@@ -1,6 +1,6 @@
 # Market Data Collector – Design Notes
 
-> Last updated: 2025-12-30 — Discovery/poller split (snapshots + venue runtimes)
+> Last updated: 2025-12-31 — Discovery rules split from runtime settings; discovery now client-owned per venue
 
 ## Architecture Overview
 
@@ -70,6 +70,25 @@ Fields:
 - `out_dir` – venue-scoped output root
 - `discover_fn` – venue-specific discovery function (used by DiscoveryService)
 
+**Current convention:** `discover_fn` is typically a thin wrapper around `client.discover_instruments(rules)` so discovery logic is **owned by the venue client**, not app glue code.
+
+## Configuration Model
+
+This repo distinguishes:
+
+- **Runtime settings** (how the engine runs): `config/settings.py` → `AppSettings`
+  - JSONL rotation / fsync cadence
+  - discovery cadence
+  - poll cadence
+  - output directory root
+- **Discovery rules** (what markets to watch): venue-scoped rule modules
+  - `config/polymarket_rules.py` → `POLYMARKET_RULES`
+  - `config/limitless_rules.py` → `LIMITLESS_RULES`
+
+Environment variables are intentionally minimal. The only supported env override is:
+
+- `OUTPUT_DIR` – absolute path where all venue output is written
+
 ## Data Model
 
 ### Instrument Dictionary (Shared Shape)
@@ -87,6 +106,10 @@ All venues emit **instrument dictionaries** with a common minimum schema:
 }
 ```
 
+Contract notes:
+- `expiration` is **epoch milliseconds** (UTC)
+- `poll_key` is the opaque identifier required by the venue client to fetch an order book
+
 Common optional fields:
 - `underlying`
 - `title` / `question`
@@ -103,9 +126,9 @@ A stable `instrument_key` is defined as:
 ```
 
 Rationale:
-- `poll_key` is the opaque identifier required by the venue client to fetch an order book
-- It is stable, unique per order book, and already present in discovery output
-- Using `poll_key` avoids venue-specific key derivation logic
+- `poll_key` is already present in discovery output
+- It is stable and unique per order book
+- It avoids venue-specific key derivation logic
 
 This key is used as the primary key in snapshots and all in-memory poller state.
 
@@ -137,17 +160,19 @@ Notes:
 ## Venue-Specific Discovery Semantics
 
 ### Limitless
-- Discovery input: configured `settings.UNDERLYINGS`
+- Discovery input: `LIMITLESS_RULES` (currently a list of underlyings; may evolve into structured rules)
+- Discovery implementation: `LimitlessVenueClient.discover_instruments(rules)`
 - Discovery output: **one instrument per CLOB market**
 - Polling:
   - `poll_key = market.slug`
   - `instrument_id = "BOOK"`
 - Filtering (current):
   - Exclude AMM markets (e.g., `tradeType != "clob"` or `tokens is None`)
-  - Keep funded, not-expired markets (as configured)
+  - Keep funded/active, not-expired markets (as implemented in the client)
 
 ### Polymarket
-- Discovery via Gamma search + hydration
+- Discovery input: `POLYMARKET_RULES`
+- Discovery implementation: `PolymarketClient.discover_instruments(rules)` (Gamma search + hydration)
 - Each market has **two CLOBs** (YES/NO), modeled as **two instruments**
 - Polling:
   - `poll_key = asset_id` (token / CLOB identifier)
@@ -156,7 +181,7 @@ Notes:
 
 ## Persistence Layout
 
-For each venue under `settings.OUTPUT_DIR`:
+For each venue under `settings.OUTPUT_DIR` (or env `OUTPUT_DIR`):
 
 - `orderbooks/date=YYYY-MM-DD/`  
   Rotating JSONL logs of order book snapshots
@@ -181,8 +206,8 @@ For each venue under `settings.OUTPUT_DIR`:
 
 ## Next Planned Cleanup
 
+- Optional: upgrade `LIMITLESS_RULES` from a simple list to structured rules (match Polymarket pattern)
 - Optional: introduce explicit discovery semantics for
   - strict replacement vs
   - grace-window (sticky) active sets
 - Optional: downstream compaction or bucketing of order book logs for analytics
-
