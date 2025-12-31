@@ -211,3 +211,8 @@ For each venue under `settings.OUTPUT_DIR` (or env `OUTPUT_DIR`):
   - strict replacement vs
   - grace-window (sticky) active sets
 - Optional: downstream compaction or bucketing of order book logs for analytics
+
+
+
+
+
