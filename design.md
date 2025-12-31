@@ -197,6 +197,197 @@ For each venue under `settings.OUTPUT_DIR` (or env `OUTPUT_DIR`):
 - `state/active_instruments.snapshot.json`  
   Atomic snapshot consumed by the poller
 
+---
+
+## MarketCatalog (Metadata Index & Analysis Layer)
+
+The **MarketCatalog** is a **read-only, venue-agnostic metadata index** built from the discovery logs written under `markets/`.  
+It exists to support **offline analysis**, **interactive inspection (e.g. notebooks)**, and **future readers**, without touching order book data.
+
+> **Key principle:**  
+> MarketCatalog indexes *markets and instruments*, **not order books**.
+
+### What MarketCatalog Is
+
+- A **derived, in-memory view** of discovery metadata
+- Rebuilt cheaply from disk at any time
+- Independent of poller runtime state
+- Safe to use in notebooks, batch jobs, and future readers
+
+### What MarketCatalog Is Not
+
+- Not a persistent database
+- Not a strategy engine
+- Not an order book index
+- Not required by the poller hot path
+
+## Conceptual Model
+
+### Instrument vs Market
+
+The system distinguishes between:
+
+- **Instrument**  
+  One pollable order book stream  
+  (e.g. Limitless CLOB, Polymarket YES or NO book)
+
+- **Market**  
+  A grouping of one or more instruments that resolve together  
+  (e.g. Polymarket YES+NO, Limitless single-book market)
+
+This distinction is essential because:
+- Some venues have **1 instrument per market**
+- Others have **N instruments per market**
+- Readers and analysis often operate at the *market* level
+
+## MarketCatalog Data Flow
+
+```
+DiscoveryService
+   ↓
+markets/date=YYYY-MM-DD/*.jsonl
+   ↓
+VenueParser (per venue)
+   ↓
+InstrumentDraft (merge-friendly)
+   ↓
+InstrumentAccum / MarketAccum (merge layer)
+   ↓
+InstrumentMeta / MarketMeta (immutable)
+   ↓
+MarketCatalog (queryable)
+```
+
+### Inputs
+
+MarketCatalog reads **only metadata**:
+
+- `markets/date=YYYY-MM-DD/*.jsonl`
+- (optional) `state/active_instruments.snapshot.json`
+
+It never reads order book files.
+
+### Outputs (In-Memory)
+
+- `InstrumentMeta` — one per order book stream
+- `MarketMeta` — one per logical market
+
+Both are immutable and safe to share.
+
+## Core Types
+
+### InstrumentMeta
+
+Represents **one canonical order book stream**.
+
+Key fields:
+- `instrument_id = "<venue>:<poll_key>"`
+- `venue`
+- `poll_key`
+- `market_id`
+- `expiration_ms` (epoch ms, unified across venues)
+- `outcome` (if applicable)
+- `rule` (discovery provenance)
+- `cadence` (derived; may be None)
+- `is_active` (annotated from snapshot)
+- `first_seen_ms` / `last_seen_ms`
+- `extra` (small, venue-specific subset)
+
+Invariant:
+- One `InstrumentMeta` ↔ one pollable order book
+
+### MarketMeta
+
+Represents **one logical market**, grouping instruments.
+
+Key fields:
+- `(venue, market_id)` as identity
+- `instruments` → tuple of `instrument_id`
+- `expiration_ms`
+- `rule`, `cadence`, `underlying`
+- `is_active` (true if *any* instrument is active)
+- observation window (`first_seen_ms`, `last_seen_ms`)
+
+Invariant:
+- A market may have **1 or many instruments**
+
+## Venue Parsers
+
+Venue-specific logic is **fully isolated** in parsers.
+
+Each venue implements a `VenueParser` with the contract:
+
+```python
+parse_line(record: dict) -> list[InstrumentDraft]
+```
+
+Rules:
+- Return `[]` for records that are not instrument-capable
+- Return one or more `InstrumentDraft` for pollable instruments
+- Never mutate shared state
+- Never assume storage layout or other venues
+
+### Why Drafts Exist
+
+Discovery logs:
+- span multiple days
+- repeat markets/instruments
+- may evolve schema over time
+
+`InstrumentDraft` is intentionally **merge-friendly**.  
+The catalog later consolidates drafts into canonical metadata.
+
+## Snapshot Annotation (Optional)
+
+If present, `active_instruments.snapshot.json` is used to annotate:
+
+- `InstrumentMeta.is_active`
+- `MarketMeta.is_active`
+
+Notes:
+- Snapshot is treated as **read-only**
+- Catalog remains valid without snapshots
+- Snapshot schema is intentionally *not* required for ingestion
+
+## Summary & Health Checks
+
+MarketCatalog provides a **venue-agnostic summary** to validate ingestion:
+
+- Instruments per venue
+- Markets per venue
+- Instruments-per-market ratio
+
+This catches common failure modes:
+- Missing one side of a multi-instrument market
+- Partial discovery ingestion
+- Venue schema drift
+
+## Design Guarantees
+
+- Adding a new venue requires:
+  1. A new `VenueParser`
+  2. Registering it with `MarketCatalog`
+- No core logic changes required
+- No venue assumptions in catalog logic
+- Safe to rebuild at any time
+- Deterministic given the same on-disk logs
+
+## Relationship to Future Readers
+
+MarketCatalog is the **intended entry point** for:
+
+- OrderbookReader (stream selection)
+- Sampling / batching logic
+- Research notebooks
+- Offline analytics
+
+Readers should depend on:
+- `MarketMeta`
+- `InstrumentMeta`
+- Never directly on discovery logs
+
+This keeps the system layered and testable.
+
 ## Current Status
 
 - Limitless: ~8 active CLOB markets (varies with discovery window)
@@ -211,8 +402,3 @@ For each venue under `settings.OUTPUT_DIR` (or env `OUTPUT_DIR`):
   - strict replacement vs
   - grace-window (sticky) active sets
 - Optional: downstream compaction or bucketing of order book logs for analytics
-
-
-
-
-
