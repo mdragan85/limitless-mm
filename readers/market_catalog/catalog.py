@@ -21,6 +21,7 @@ Design principles:
 from __future__ import annotations
 
 import json
+import pandas as pd
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,10 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from .catalog_models import InstrumentAccum, MarketAccum
 from .models import make_instrument_id
 from .parsers import VenueParser
+
+from datetime import datetime, timezone
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -211,11 +216,12 @@ class MarketCatalog:
         mkt_acc: Dict[Tuple[str, str], MarketAccum] = {}
 
         for ia in inst_acc.values():
-            key = (ia.venue, ia.market_id)
+            # Normalize market_id to str for stable keys across venues/parsers.
+            key = (ia.venue, str(ia.market_id))
             if key not in mkt_acc:
                 mkt_acc[key] = MarketAccum(
                     venue=ia.venue,
-                    market_id=ia.market_id,
+                    market_id=str(ia.market_id),
                 )
             mkt_acc[key].absorb_instrument(ia)
 
@@ -228,7 +234,7 @@ class MarketCatalog:
                 instrument_id=ia.instrument_id,
                 venue=ia.venue,
                 poll_key=ia.poll_key,
-                market_id=ia.market_id,
+                market_id=str(ia.market_id),
                 slug=ia.slug,
                 expiration_ms=ia.expiration_ms,
                 title=ia.title,
@@ -247,9 +253,12 @@ class MarketCatalog:
             inst_ids = tuple(sorted(ma.instruments))
             is_active = any(iid in active_ids for iid in inst_ids)
 
-            markets_meta[key] = MarketMeta(
+            # Normalize key + stored market_id to str.
+            v, mid = key
+            skey = (v, str(mid))
+            markets_meta[skey] = MarketMeta(
                 venue=ma.venue,
-                market_id=ma.market_id,
+                market_id=str(ma.market_id),
                 slug=ma.slug,
                 instruments=inst_ids,
                 expiration_ms=ma.expiration_ms,
@@ -276,6 +285,139 @@ class MarketCatalog:
         """
         m = self._markets.get((venue, str(market_id)))
         return list(m.instruments) if m else []
+
+    # ------------------------------------------------------------------
+    # Notebook helpers (optional pandas)
+    # ------------------------------------------------------------------
+
+    def markets_df(self, *, max_rows: Optional[int] = None, max_str: int = 80):
+        """Market-only view (no instrument references)."""
+        try:
+            import pandas as pd  # type: ignore
+        except ImportError as e:
+            raise ImportError("pandas is required for markets_df()") from e
+
+        rows: List[Dict[str, Any]] = []
+        for (venue, market_id), m in self._markets.items():
+            rows.append(
+                {
+                    "venue": venue,
+                    "market_id": market_id,
+                    "title": (m.title or "")[:max_str],
+                    "slug": (m.slug or "")[:max_str],
+                    "cadence": m.cadence or "",
+                    "underlying": m.underlying or "",
+                    "expiration_ms": int(m.expiration_ms or 0),
+                    "is_active": getattr(m, "is_active", None),
+                    "first_seen_ms": int(getattr(m, "first_seen_ms", 0) or 0),
+                    "last_seen_ms": int(getattr(m, "last_seen_ms", 0) or 0),
+                }
+            )
+
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df = df.sort_values(
+                ["venue", "expiration_ms", "market_id"],
+                ascending=[True, True, True],
+            )
+        if max_rows is not None:
+            df = df.head(int(max_rows))
+        return df.reset_index(drop=True)
+
+    def instruments_df(self, *, max_rows: Optional[int] = None, max_str: int = 80):
+        """Instrument-only view (no market joins)."""
+        try:
+            import pandas as pd  # type: ignore
+        except ImportError as e:
+            raise ImportError("pandas is required for instruments_df()") from e
+
+        rows: List[Dict[str, Any]] = []
+        for iid, i in self._instruments.items():
+            rows.append(
+                {
+                    "instrument_id": (iid or "")[:max_str],
+                    "venue": i.venue,
+                    "market_id": i.market_id,
+                    "poll_key": (i.poll_key or "")[:max_str],
+                    "title": (i.title or "")[:max_str],
+                    "slug": (i.slug or "")[:max_str],
+                    "outcome": i.outcome or "",
+                    "cadence": i.cadence or "",
+                    "underlying": i.underlying or "",
+                    "expiration_ms": int(i.expiration_ms or 0),
+                    "is_active": getattr(i, "is_active", None),
+                    "first_seen_ms": int(getattr(i, "first_seen_ms", 0) or 0),
+                    "last_seen_ms": int(getattr(i, "last_seen_ms", 0) or 0),
+                }
+            )
+
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df = df.sort_values(
+                ["venue", "expiration_ms", "instrument_id"],
+                ascending=[True, True, True],
+            )
+        if max_rows is not None:
+            df = df.head(int(max_rows))
+        return df.reset_index(drop=True)
+
+    def market_detail_df(self, venue: str, market_id: Any, *, max_str: int = 200):
+        """Market-only drilldown (excludes instruments)."""
+        try:
+            import pandas as pd  # type: ignore
+        except ImportError as e:
+            raise ImportError("pandas is required for market_detail_df()") from e
+
+        candidates: List[Tuple[str, Any]] = [(venue, market_id)]
+        try:
+            candidates.append((venue, int(market_id)))
+        except Exception:
+            pass
+        candidates.append((venue, str(market_id)))
+
+        key = next((k for k in candidates if k in self._markets), None)
+        if key is None:
+            raise KeyError(
+                f"Market not found for venue={venue!r} market_id={market_id!r}. Tried keys={candidates}"
+            )
+
+        m = self._markets[key]
+
+        rows: List[Dict[str, Any]] = []
+
+        def add(field: str, value: Any) -> None:
+            if isinstance(value, str):
+                value = value[:max_str]
+            rows.append({"field": field, "value": value})
+
+        # Dump all attributes except instruments; flatten extra.
+        if hasattr(m, "__dict__"):
+            for k, v in sorted(m.__dict__.items()):
+                if k in ("instruments", "extra"):
+                    continue
+                add(k, v)
+        else:
+            for k in (
+                "venue",
+                "market_id",
+                "slug",
+                "expiration_ms",
+                "title",
+                "underlying",
+                "rule",
+                "cadence",
+                "is_active",
+                "first_seen_ms",
+                "last_seen_ms",
+            ):
+                add(k, getattr(m, k, None))
+
+        extra = getattr(m, "extra", None)
+        if isinstance(extra, dict):
+            for k, v in sorted(extra.items()):
+                add(f"extra.{k}", v)
+
+        return pd.DataFrame(rows)
 
     # ------------------------------------------------------------------
     # Disk helpers
@@ -375,6 +517,70 @@ class MarketCatalog:
             "markets_total": len(self._markets),
             "by_venue": by_venue,
         }
+    
+    # ------------------------------------------------------------------
+    # Notebook helpers (optional pandas)
+    # ------------------------------------------------------------------
+    def markets_df(self, *, max_rows: int | None = None, max_str: int = 80):
+
+        rows = []
+        for (venue, market_id), m in self._markets.items():
+            rows.append({
+                "venue": venue,
+                "market_id": market_id,
+                "title": (m.title or "")[:max_str],
+                "slug": (m.slug or "")[:max_str],
+                "cadence": m.cadence or "",
+                "underlying": m.underlying or "",
+                "expiration_utc": ms_to_utc(m.expiration_ms),
+                "first_seen_utc": ms_to_utc(getattr(m, "first_seen_ms", None)),
+                "last_seen_utc": ms_to_utc(getattr(m, "last_seen_ms", None)),
+                "is_active": getattr(m, "is_active", None),
+            })
+
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df = df.sort_values(["venue", "expiration_utc", "market_id"], ascending=[True, True, True])
+
+        if max_rows is not None:
+            df = df.head(int(max_rows))
+
+        return df.reset_index(drop=True)
+
+    def instruments_df(self, *, max_rows: Optional[int] = None, max_str: int = 80):
+        """
+        Return a compact pandas DataFrame of indexed instruments (readable columns).
+        """
+        rows = []
+        for iid, i in self._instruments.items():
+            rows.append({
+                "instrument_id": iid,
+                "venue": i.venue,
+                "market_id": i.market_id,
+                "poll_key": i.poll_key,
+                "title": i.title or "",
+                "slug": i.slug or "",
+                "outcome": i.outcome or "",
+                "cadence": i.cadence or "",
+                "underlying": i.underlying or "",
+                "expiration_utc": ms_to_utc(i.expiration_ms),
+                "first_seen_utc": ms_to_utc(getattr(i, "first_seen_ms", None)),
+                "last_seen_utc": ms_to_utc(getattr(i, "last_seen_ms", None)),
+                "is_active": i.is_active,
+            })
+
+        df = pd.DataFrame(rows)
+
+        if not df.empty:
+            df = df.sort_values(["venue", "expiration_utc", "instrument_id"], ascending=[True, True, True])
+            for c in ["title", "slug", "poll_key", "instrument_id"]:
+                df[c] = df[c].astype(str).str.slice(0, max_str)
+
+        if max_rows is not None:
+            df = df.head(int(max_rows))
+
+        return df.reset_index(drop=True)
+
 
 # ---------------------------------------------------------------------------
 # Local helpers
@@ -388,3 +594,11 @@ def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
             if not line:
                 continue
             yield json.loads(line)
+
+def ms_to_utc(ms):
+    if not ms:
+        return None
+    try:
+        return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+    except Exception:
+        return None
