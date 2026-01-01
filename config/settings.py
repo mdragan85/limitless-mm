@@ -34,6 +34,8 @@ class AppSettings:
 
     # Output Logs------------------------------------------------------------------
     OUTPUT_DIR: Path = Path(os.getenv("OUTPUT_DIR", ".outputs/logs"))
+    INPUT_DIR: Path = Path(os.getenv("INPUT_DIR", ".outputs/logs"))
+
 
     # Schema versions (Maybe this out to live somewhere else? )
     SCHEMA_VERSION_ORDERBOOK = 1
