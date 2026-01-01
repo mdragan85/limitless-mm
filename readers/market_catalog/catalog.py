@@ -67,6 +67,42 @@ class InstrumentMeta:
 
     extra: Dict[str, Any]
 
+    def __post_init__(self) -> None:
+        """
+        Validate hard invariants at object construction time.
+
+        Why here:
+        - InstrumentMeta is the canonical frozen representation.
+        - Catching bad data early prevents silent corruption in queries/readers.
+        """
+        self._validate_invariants()
+
+    def _validate_invariants(self) -> None:
+        """
+        Hard invariants for InstrumentMeta.
+
+        These are intentionally strict because downstream code relies on them.
+        If a venue parser can't satisfy them, fix the parser (don't weaken these).
+        """
+        # Identity / keys
+        assert isinstance(self.instrument_id, str) and self.instrument_id, "instrument_id must be non-empty str"
+        assert isinstance(self.venue, str) and self.venue, "venue must be non-empty str"
+        assert isinstance(self.poll_key, str) and self.poll_key, "poll_key must be non-empty str"
+        assert isinstance(self.market_id, str) and self.market_id, "market_id must be non-empty str"
+
+        # Expiry is a hard invariant in your system (you explicitly confirmed this).
+        assert isinstance(self.expiration_ms, int), "expiration_ms must be int epoch-ms"
+        assert self.expiration_ms > 0, "expiration_ms must be a positive epoch-ms"
+
+        # Seen timestamps should be valid epoch-ms ints and ordered.
+        assert isinstance(self.first_seen_ms, int) and self.first_seen_ms > 0, "first_seen_ms must be positive int"
+        assert isinstance(self.last_seen_ms, int) and self.last_seen_ms > 0, "last_seen_ms must be positive int"
+        assert self.last_seen_ms >= self.first_seen_ms, "last_seen_ms must be >= first_seen_ms"
+
+        # Extra must always be a dict (can be empty).
+        assert isinstance(self.extra, dict), "extra must be a dict"
+
+
 
 @dataclass(frozen=True)
 class MarketMeta:

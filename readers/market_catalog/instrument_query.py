@@ -18,6 +18,18 @@ def _safe_getattr(obj: Any, name: str) -> Any:
     return getattr(obj, name, None)
 
 
+def _now_ms() -> int:
+    """
+    Current wall-clock time in epoch milliseconds.
+
+    Kept local to this module because:
+    - InstrumentQuery is notebook-facing and should be self-contained.
+    - We want to inject `now_ms` for reproducible notebooks/tests.
+    """
+    import time
+    return time.time_ns() // 1_000_000
+
+
 @dataclass(frozen=True)
 class InstrumentQuery:
     """
@@ -45,11 +57,41 @@ class InstrumentQuery:
             return self
         return InstrumentQuery(tuple(i for i in self._items if i.venue in vset))
 
+    def is_active(self, enabled: bool = True, *, now_ms: Optional[int] = None) -> "InstrumentQuery":
+        """
+        Filter instruments by *inferred* activeness based on expiration time.
+
+        Why inference:
+        - Snapshots can be stale.
+        - Notebooks / long-lived processes need time-correct answers.
+        - Expiry is always known (your invariant), so this is deterministic.
+
+        Args:
+            enabled:
+                - True  -> keep only instruments where expiration_ms > now_ms
+                - False -> keep only instruments where expiration_ms <= now_ms
+            now_ms:
+                Epoch milliseconds. If None, uses current wall-clock time.
+                Passing now_ms makes results reproducible in notebooks/tests.
+
+        Returns:
+            A new InstrumentQuery containing only matching instruments.
+        """
+        now = _now_ms() if now_ms is None else int(now_ms)
+
+        if enabled:
+            return InstrumentQuery(tuple(i for i in self._items if i.expiration_ms > now))
+        return InstrumentQuery(tuple(i for i in self._items if i.expiration_ms <= now))
+
     def active_only(self, enabled: bool = True) -> "InstrumentQuery":
-        if not enabled:
-            return self
-        # Only filter when is_active is known; unknown stays in.
-        return InstrumentQuery(tuple(i for i in self._items if (i.is_active is None or i.is_active is True)))
+        """
+        Backward-compatible alias for `is_active(enabled=True)`.
+
+        Note:
+        This intentionally ignores InstrumentMeta.is_active and infers activeness
+        from expiration_ms to avoid snapshot staleness.
+        """
+        return self.is_active(enabled=enabled)
 
     def expiry_between(self, min_ms: Optional[int] = None, max_ms: Optional[int] = None) -> "InstrumentQuery":
         def ok(i: InstrumentMeta) -> bool:
