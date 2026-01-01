@@ -61,7 +61,6 @@ class InstrumentMeta:
     rule: Optional[str]
     cadence: Optional[str]
 
-    is_active: bool               # derived from snapshot (if available)
     first_seen_ms: int
     last_seen_ms: int
 
@@ -278,7 +277,6 @@ class MarketCatalog:
                 outcome=ia.outcome,
                 rule=ia.rule,
                 cadence=ia.cadence,
-                is_active=(iid in active_ids),
                 first_seen_ms=ia.first_seen_ms,
                 last_seen_ms=ia.last_seen_ms,
                 extra=ia.extra,
@@ -571,7 +569,6 @@ class MarketCatalog:
                 "expiration_utc": ms_to_utc(m.expiration_ms),
                 "first_seen_utc": ms_to_utc(getattr(m, "first_seen_ms", None)),
                 "last_seen_utc": ms_to_utc(getattr(m, "last_seen_ms", None)),
-                "is_active": getattr(m, "is_active", None),
             })
 
         df = pd.DataFrame(rows)
@@ -601,8 +598,7 @@ class MarketCatalog:
                 "underlying": i.underlying or "",
                 "expiration_utc": ms_to_utc(i.expiration_ms),
                 "first_seen_utc": ms_to_utc(getattr(i, "first_seen_ms", None)),
-                "last_seen_utc": ms_to_utc(getattr(i, "last_seen_ms", None)),
-                "is_active": i.is_active,
+                "last_seen_utc": ms_to_utc(getattr(i, "last_seen_ms", None))
             })
 
         df = pd.DataFrame(rows)
