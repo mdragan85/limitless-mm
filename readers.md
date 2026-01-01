@@ -31,6 +31,18 @@ It exists to support:
 
 ---
 
+## Time Standard
+
+All time in this project is **UTC**.
+
+- Canonical internal representation is **epoch milliseconds** (`*_ms`)
+- Any human-facing datetime views are **UTC** (e.g. `*_utc`)
+- No local timezone conversions occur inside core objects (only optionally in notebooks)
+
+This eliminates cross-machine ambiguity and makes multi-venue comparisons consistent.
+
+---
+
 ## Conceptual Model
 
 ### Instrument vs Market
@@ -103,16 +115,30 @@ Key fields:
 - `venue`
 - `poll_key`
 - `market_id`
-- `expiration_ms` (epoch ms, unified across venues)
-- `outcome` (if applicable)
-- `rule` (discovery provenance)
-- `cadence` (derived window length; e.g. `1h`, `1d`, `1w`; may be None)
-- `is_active` (annotated; see below)
+- `slug` (optional)
+- `expiration_ms` (**epoch ms, UTC**, unified across venues)
+- `title` (optional)
+- `underlying` (optional; see notes below)
+- `outcome` (optional; e.g. YES/NO or Up/Down)
+- `rule` (optional; discovery provenance)
+- `cadence` (optional; derived window length; e.g. `15m`, `1h`, `1d`, `1w`)
+- `is_active` (optional annotation; see *Active Semantics*)
 - `first_seen_ms`, `last_seen_ms`
 - `extra` (small, venue-specific subset)
 
 **Invariant**  
 One `InstrumentMeta` ↔ one pollable order book.
+
+#### Underlying Notes
+
+Some venues do not provide an explicit underlying for all instruments.
+For example, Polymarket instruments may require inference from `slug`/`title`
+(e.g. `btc-updown-15m-...`) when `underlying` is missing.
+
+Rules:
+- Prefer explicit venue fields when present
+- Otherwise infer from stable, low-ambiguity tokens in `slug`/`title`
+- Keep inference logic **venue-scoped** inside that venue's parser
 
 ---
 
@@ -138,7 +164,7 @@ A market may have **1 or many instruments**.
 `cadence` represents the **contract window length**, not recurrence frequency.
 
 Examples:
-- `1h`, `4h`, `1d`, `1w`
+- `15m`, `1h`, `4h`, `1d`, `1w`
 
 Derivation rules:
 - Venue-specific and isolated in parsers
@@ -156,7 +182,7 @@ Derivation rules:
 
 Defaults:
 - If snapshot data is present: annotated from snapshot
-- Otherwise: inferred via `now < expiration_ms`
+- Otherwise: inferred via `now_ms < expiration_ms`
 
 Notes:
 - `is_active` does **not** imply liquidity or live polling
@@ -241,6 +267,37 @@ Downstream components should depend on:
 
 ---
 
+## Orderbook Reading Layers
+
+Orderbook reading is intentionally separate from MarketCatalog.
+
+Typical layering:
+
+- **OrderbookReader** (I/O only)  
+  Streams JSONL orderbook records from disk and filters by `instrument_id`.
+
+  Typical layout:
+  - `.outputs/logs/<venue>/orderbooks/date=YYYY-MM-DD/orderbooks.part-*.jsonl`
+
+- **OrderbookStream** (identity + convenience)  
+  Binds an `InstrumentMeta` to an `OrderbookReader` and provides `iter_snapshots(...)`.
+
+- **OrderbookHistory** (in-memory evolution)  
+  Materializes a bounded list of snapshots and provides notebook-friendly views (e.g. DataFrames).
+  `OrderbookHistory` carries the `InstrumentMeta` it was constructed from to avoid juggling objects in notebooks.
+
+### Timestamps in OrderbookHistory
+
+Orderbook logs may contain:
+- `ts_ms`: collector fetch/write time (always present)
+- `ob_ts_ms`: venue “as-of” timestamp (present for Polymarket; not for all venues)
+
+`OrderbookHistory` supports configurable time semantics via `time_field`:
+- default: `time_field="ts_ms"`
+- optional: `time_field="ob_ts_ms"` when available (with a small refresh overlap to avoid missing/duplicating records)
+
+---
+
 ## Design Guarantees
 
 - Adding a new venue requires:
@@ -254,8 +311,8 @@ Downstream components should depend on:
 
 ## Next Planned Work
 
-- Query layer for selecting markets / instruments
-- OrderbookStore / Reader consuming `instrument_id`
+- Minimal query helpers for selecting markets / instruments (notebooks-first)
+- Timeseries-friendly orderbook views (e.g. L1/L2 price/size columns derived from nested bids/asks)
 - Optional future distinction between:
   - *theoretical activity* vs
   - *operational availability*

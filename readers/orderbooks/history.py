@@ -4,29 +4,120 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from readers.orderbooks.time import effective_ts_ms
+from readers.market_catalog.catalog import InstrumentMeta
+from readers.orderbooks.reader import OrderbookReader
 
+from datetime import datetime, timezone, date
+from pathlib import Path
+
+from config.settings import settings
+
+
+def _ms_to_utc_date(ms: int) -> date:
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).date()
+
+def _dates_between_utc(d0: date, d1: date) -> list[str]:
+    if d1 < d0:
+        d0, d1 = d1, d0
+    out = []
+    cur = d0
+    while cur <= d1:
+        out.append(cur.isoformat())
+        cur = cur.fromordinal(cur.toordinal() + 1)
+    return out
 
 @dataclass
 class OrderbookHistory:
     """
-    In-memory history over a bounded time window for ONE instrument.
+    In-memory orderbook evolution for ONE instrument, plus its immutable metadata.
 
-    Key properties:
-    - Built from logged snapshots (JSONL records).
-    - Uses a configurable timestamp field for ordering/windowing (default "ts_ms").
-    - Supports fast refresh by reading only new snapshots since last seen time.
-
-    This is intentionally not an index and not a database.
+    Source of truth:
+      - instrument: InstrumentMeta (metadata)
+      - snapshots: list of raw JSONL dict records (orderbook snapshots)
     """
-    instrument_id: str
+    instrument: InstrumentMeta
     snapshots: List[Dict[str, Any]]
 
     time_field: str = "ts_ms"
     fallback_time_field: str = "ts_ms"
 
-    # Refresh behavior
-    refresh_overlap_ms: int = 0   # use small overlap for venue-time clocks if needed
+    refresh_overlap_ms: int = 0
     _last_effective_ts_ms: Optional[int] = None
+
+    @classmethod
+    def from_instrument(
+        cls,
+        instrument: InstrumentMeta,
+        *,
+        start_dt: Optional[datetime] = None,
+        end_dt: Optional[datetime] = None,
+        input_dir: Optional[Path] = None,
+        time_field: str = "ts_ms",
+        fallback_time_field: str = "ts_ms",
+        refresh_overlap_ms: Optional[int] = None,
+    ) -> "OrderbookHistory":
+        """
+        Construct history by reading orderbook JSONL logs for one instrument.
+
+        Defaults:
+        - input_dir: settings.INPUT_DIR
+        - date partitions: inferred from (start_dt/end_dt) if provided,
+            else from instrument.first_seen_ms .. instrument.last_seen_ms (UTC dates)
+        - time_field: "ts_ms" (collector time); can be "ob_ts_ms" for polymarket
+        - refresh_overlap_ms: defaults to 10s when using "ob_ts_ms", else 0
+
+        Notes:
+        - Reader window filtering uses ts_ms (collector time). History ordering/windowing
+            uses time_field (ts_ms or ob_ts_ms).
+        """
+
+        base_dir = input_dir or settings.INPUT_DIR
+        reader = OrderbookReader(output_dir=base_dir)
+
+        # Determine date partitions to scan
+        if start_dt is not None or end_dt is not None:
+            # Use provided datetimes (treat naive as UTC to avoid surprises)
+            s = start_dt or end_dt
+            e = end_dt or start_dt
+            if s is None or e is None:
+                raise ValueError("start_dt/end_dt logic error")
+            if s.tzinfo is None:
+                s = s.replace(tzinfo=timezone.utc)
+            if e.tzinfo is None:
+                e = e.replace(tzinfo=timezone.utc)
+            dates = _dates_between_utc(s.date(), e.date())
+            start_ms = int(s.timestamp() * 1000)
+            end_ms = int(e.timestamp() * 1000)
+        else:
+            # Infer from metadata (UTC dates)
+            d0 = _ms_to_utc_date(instrument.first_seen_ms)
+            d1 = _ms_to_utc_date(instrument.last_seen_ms)
+            dates = _dates_between_utc(d0, d1)
+            start_ms = None
+            end_ms = None
+
+        # Reasonable default overlap when using venue-time clocks
+        if refresh_overlap_ms is None:
+            refresh_overlap_ms = 10_000 if time_field == "ob_ts_ms" else 0
+
+        snaps = list(
+            reader.iter_snapshots(
+                [instrument.instrument_id],
+                dates=dates,
+                start_ms=start_ms,
+                end_ms=end_ms,
+            )
+        )
+
+        hist = cls(
+            instrument=instrument,
+            snapshots=snaps,
+            time_field=time_field,
+            fallback_time_field=fallback_time_field,
+            refresh_overlap_ms=int(refresh_overlap_ms),
+        )
+        hist.sort_in_place()
+        return hist
 
     def __post_init__(self) -> None:
         # Normalize: compute watermark if not supplied

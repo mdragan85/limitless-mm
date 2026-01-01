@@ -1,5 +1,10 @@
 import time
 
+import pandas as pd 
+
+pd.set_option("display.max_rows", None)
+pd.set_option("display.max_columns", None)
+
 from pathlib import Path
 from readers.market_catalog.catalog import MarketCatalog
 from readers.market_catalog.parsers import LimitlessParser, PolymarketParser
@@ -25,7 +30,26 @@ dfm = cat.markets_df()
 dfi = cat.instruments_df()
 
 
+#%%
 
+# --- Latest BTC 15m from Polymarket ---
+pm_btc_15m = max(
+    (i for i in cat.instruments.values()
+     if i.venue == "polymarket" and i.cadence == "15m"),
+    key=lambda i: i.last_seen_ms
+)
+
+# --- Latest BTC (any cadence) from Limitless ---
+lm_btc_latest = max(
+    (i for i in cat.instruments.values()
+     if i.venue == "limitless"),
+    key=lambda i: i.last_seen_ms
+)
+
+print(pm_btc_15m) 
+print(lm_btc_latest)
+
+assert False, 'sto here'
 
 #%%
 from readers.market_catalog.instrument_query import InstrumentQuery
@@ -47,28 +71,12 @@ for d in dbg:
 
 #%%
 
+from readers.orderbooks.history import OrderbookHistory
 
-reader = OrderbookReader(output_dir=Path(".outputs/logs"))
+meta = cat.instruments[ids[0]]
 
-# pick an instrument
-instrument_id = next(iter(cat.instruments.keys()))
-meta = cat.instruments[instrument_id]
-
-stream = OrderbookStream(instrument=meta, reader=reader)
-
-now = time.time_ns() // 1_000_000
-dates = [time.strftime("%Y-%m-%d")]
-
-snaps = list(stream.iter_snapshots(dates=dates))
-
-hist = OrderbookHistory(
-    instrument_id=meta.instrument_id,
-    snapshots=snaps,
-    time_field="ts_ms",
-)
-
-hist.sort_in_place()
+hist = OrderbookHistory.from_instrument(meta)  # scans instrument first/last seen dates
+hist.instrument          # full InstrumentMeta right here
 df = hist.to_dataframe()
-df.head()
+df.tail()
 
-# %%
