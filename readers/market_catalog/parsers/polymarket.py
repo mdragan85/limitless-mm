@@ -19,22 +19,136 @@ from typing import Any, Dict, List, Optional
 from ..models import InstrumentDraft, make_instrument_id
 from ..utils import parse_iso_to_ms, pick_seen_ms, require
 
+import re
 
+
+# --- cadence helpers ---------------------------------------------------------
+_CADENCE_WORD_MAP = {
+    "hourly": "1h",
+    "daily": "1d",
+    "weekly": "1w",
+}
+
+_TOKEN_RE = re.compile(r"(?:^|[-_\s])(\d+)\s*([mhdw])(?:$|[-_\s])", re.IGNORECASE)
+_HR_RE = re.compile(r"(?:^|[-_\s])(\d+)\s*(?:hr|hrs|hour|hours)(?:$|[-_\s])", re.IGNORECASE)
+_MIN_RE = re.compile(r"(?:^|[-_\s])(\d+)\s*(?:min|mins|minute|minutes)(?:$|[-_\s])", re.IGNORECASE)
+
+_TIME_RANGE_RE = re.compile(
+    r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)",
+    re.IGNORECASE,
+)
+
+def _norm_cadence_from_text(text: str) -> Optional[str]:
+    if not text:
+        return None
+    s = text.strip().lower()
+
+    # explicit tokens like 15m / 4h / 1d in slugs/tickers
+    m = _TOKEN_RE.search(s)
+    if m:
+        n = int(m.group(1))
+        unit = m.group(2).lower()
+        return f"{n}{unit}"
+
+    # "Hourly"/"Daily" words
+    for k, v in _CADENCE_WORD_MAP.items():
+        if k in s:
+            return v
+
+    # "4H" with no separator (common in titles)
+    m = re.search(r"(\d+)\s*h\b", s)
+    if m:
+        return f"{int(m.group(1))}h"
+
+    # "4hr", "15min"
+    m = _HR_RE.search(s)
+    if m:
+        return f"{int(m.group(1))}h"
+    m = _MIN_RE.search(s)
+    if m:
+        return f"{int(m.group(1))}m"
+
+    return None
+
+def _cadence_from_title_timerange(title: str) -> Optional[str]:
+    """
+    Fallback: infer window length from "8:00AM-12:00PM" patterns in the title.
+    Only returns common buckets (15m/30m/1h/4h/24h).
+    """
+    if not title:
+        return None
+
+    m = _TIME_RANGE_RE.search(title)
+    if not m:
+        return None
+
+    sh, sm, sap, eh, em, eap = m.groups()
+    sh = int(sh); eh = int(eh)
+    sm = int(sm or 0); em = int(em or 0)
+    sap = sap.lower(); eap = eap.lower()
+
+    def to_minutes(h: int, minute: int, ap: str) -> int:
+        # 12-hour → 24-hour minutes
+        if h == 12:
+            h = 0
+        if ap == "pm":
+            h += 12
+        return h * 60 + minute
+
+    start = to_minutes(sh, sm, sap)
+    end = to_minutes(eh, em, eap)
+    if end <= start:
+        end += 24 * 60  # cross-midnight safety
+
+    delta = end - start  # minutes
+
+    # map to your canonical buckets
+    if delta in (15, 30, 60, 240, 1440):
+        if delta < 60:
+            return f"{delta}m"
+        if delta == 60:
+            return "1h"
+        if delta == 240:
+            return "4h"
+        if delta == 1440:
+            return "1d"
+
+    return None
+
+# --- main cadence derivation ----------------------------------------
 def _derive_poly_cadence(rec: Dict[str, Any]) -> Optional[str]:
     """
-    Infer cadence for Polymarket instruments.
-
-    Priority order:
-    1) Structured series recurrence (raw_market.events[0].series[0].recurrence)
-       This is the most semantically correct source when present.
-    2) Fallback: infer from slug tokens (e.g. '-15m-', '-1h-') if encoded.
-
-    Returns normalized cadence string (e.g. '15m', '1h') or None.
+    Cadence = contract window length (15m/30m/1h/4h/1d...), NOT recurrence.
+    Polymarket series recurrence can be 'daily' even for 4h products.
     """
-
     raw = rec.get("raw_market") or {}
 
-    # 1) Preferred: structured recurrence from series metadata
+    # 1) Strongest signals: instrument slug + series slug/title/ticker (often encode 4h/15m/etc)
+    slug = rec.get("slug") or ""
+    c = _norm_cadence_from_text(slug)
+    if c:
+        return c
+
+    try:
+        events = raw.get("events") or []
+        if events:
+            series = events[0].get("series") or []
+            if series:
+                s0 = series[0]
+                for field in ("slug", "ticker", "title"):
+                    c = _norm_cadence_from_text(str(s0.get(field) or ""))
+                    if c:
+                        return c
+    except Exception:
+        pass
+
+    # 2) Title time-range fallback (e.g. "8:00AM-12:00PM ET" => 4h)
+    title = rec.get("question") or raw.get("question") or ""
+    c = _cadence_from_title_timerange(title)
+    if c:
+        return c
+
+    # 3) Last resort: recurrence mapping (better than nothing, but semantically weaker)
     try:
         events = raw.get("events") or []
         if events:
@@ -42,19 +156,11 @@ def _derive_poly_cadence(rec: Dict[str, Any]) -> Optional[str]:
             if series:
                 recurrence = series[0].get("recurrence")
                 if isinstance(recurrence, str):
-                    return recurrence
+                    return _CADENCE_WORD_MAP.get(recurrence.lower())
     except Exception:
-        # Defensive: schema drift should degrade gracefully here
         pass
 
-    # 2) Fallback: infer cadence from slug if encoded
-    slug = rec.get("slug") or ""
-    for token in ("15m", "30m", "1h", "4h", "1d", "1w"):
-        if f"-{token}-" in slug:
-            return token
-
     return None
-
 
 def _poly_extra_subset(raw: Dict[str, Any]) -> Dict[str, Any]:
     """
