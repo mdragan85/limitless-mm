@@ -30,6 +30,20 @@ def _now_ms() -> int:
     return time.time_ns() // 1_000_000
 
 
+def _infer_is_active(expiration_ms: int, now_ms: int) -> bool:
+    """
+    Infer whether an instrument is active at a given time.
+
+    Definition:
+        active := expiration_ms > now_ms
+
+    Kept as a helper so:
+    - filtering and presentation can share the same definition
+    - tests can target one function
+    """
+    return int(expiration_ms) > int(now_ms)
+
+
 @dataclass(frozen=True)
 class InstrumentQuery:
     """
@@ -153,18 +167,25 @@ class InstrumentQuery:
         sort_by: str = "expiration_ms",
         per_market: PerMarket = "all",
         debug: bool = False,
-    ) -> Tuple[List[str], Optional[Any]]:
+        include_is_active: bool = True,
+        now_ms: Optional[int] = None,
+        ) -> Tuple[List[str], Optional[Any]]:
+
         items = list(self._items)
 
-        # sort: unknown expiry goes last for expiration-based sorts
         def sort_key(i: InstrumentMeta):
+            """
+            Deterministic sort for notebook display.
+
+            - For expiration_ms: expiry is guaranteed present and > 0 (invariant),
+              so we sort by (expiration_ms, instrument_id).
+            - For other fields: None goes last; instrument_id provides tie-break.
+            """
             v = _safe_getattr(i, sort_by)
             if sort_by == "expiration_ms":
-                x = int(v or 0)
-                return (x == 0, x, i.instrument_id)  # (unknown_last, exp, tie)
+                return (int(v), i.instrument_id)
             return (v is None, v, i.instrument_id)
 
-        items.sort(key=sort_key)
 
         if per_market == "one":
             chosen: Dict[Tuple[str, str], InstrumentMeta] = {}
@@ -182,8 +203,12 @@ class InstrumentQuery:
 
         dbg = None
         if debug:
-            dbg = [
-                {
+            # Presentation-only: inferred activeness. This is *not* stored in InstrumentMeta.
+            now = _now_ms() if now_ms is None else int(now_ms)
+
+            dbg = []
+            for i in items:
+                row = {
                     "instrument_id": i.instrument_id,
                     "venue": i.venue,
                     "poll_key": i.poll_key,
@@ -194,8 +219,10 @@ class InstrumentQuery:
                     "underlying": i.underlying,
                     "outcome": i.outcome,
                 }
-                for i in items
-            ]
+                if include_is_active:
+                    row["is_active"] = i.expiration_ms > now
+                dbg.append(row)
+
 
         return ids, dbg
 
