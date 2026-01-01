@@ -75,3 +75,24 @@ def require(rec: Dict[str, Any], keys: List[str], venue: str) -> None:
             f"{venue} record missing required keys={missing}. "
             f"present_keys={sorted(rec.keys())}"
         )
+
+def pretty_dataclass(obj) -> str:
+    """
+    Pretty-print a frozen dataclass with aligned ':' for notebook / REPL use.
+
+    Intended for __repr__ only (human-facing, non-stable).
+    """
+    cls = obj.__class__.__name__
+    items = vars(obj)
+
+    if not items:
+        return f"{cls}()"
+
+    key_width = max(len(k) for k in items.keys())
+
+    lines = [f"{cls}("]
+    for k, v in items.items():
+        lines.append(f"  {k.ljust(key_width)} : {v!r}")
+    lines.append(")")
+
+    return "\n".join(lines)

@@ -30,6 +30,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from .catalog_models import InstrumentAccum, MarketAccum
 from .models import make_instrument_id
 from .parsers import VenueParser
+from .utils import pretty_dataclass
 
 from datetime import datetime, timezone
 
@@ -101,6 +102,8 @@ class InstrumentMeta:
         # Extra must always be a dict (can be empty).
         assert isinstance(self.extra, dict), "extra must be a dict"
 
+    def __repr__(self) -> str:
+        return pretty_dataclass(self)
 
 
 @dataclass(frozen=True)
@@ -130,6 +133,8 @@ class MarketMeta:
 
     extra: Dict[str, Any]
 
+    def __repr__(self) -> str:
+        return pretty_dataclass(self)
 
 # ---------------------------------------------------------------------------
 # MarketCatalog
