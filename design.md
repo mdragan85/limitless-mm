@@ -402,3 +402,6 @@ This keeps the system layered and testable.
   - strict replacement vs
   - grace-window (sticky) active sets
 - Optional: downstream compaction or bucketing of order book logs for analytics
+
+
+See TIMESTAMPS.md for the canonical timestamp contract used by orderbook logs.

@@ -9,6 +9,15 @@
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
       "justMyCode": true
+    },
+    {
+      "name": "Run Logger",
+      "type": "python",
+      "request": "launch",
+      "module": "app.run_logger",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": true
     }
   ]
 }

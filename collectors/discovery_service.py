@@ -72,6 +72,25 @@ class DiscoveryService:
 
                 # Write market metadata here (discovery-owned)
                 for inst in instruments:
+                    # -------------------------------------------------------------
+                    # Write-boundary record contract (markets / metadata)
+                    # Add envelope fields so readers can route and tolerate evolution.
+                    # -------------------------------------------------------------
+                    inst.setdefault("record_type", "market")
+                    inst.setdefault("schema_version", settings.SCHEMA_VERSION_MARKETS)
+
+                    # Optional (recommended): enforce canonical identity invariants
+                    # only if the fields exist / can be derived safely.
+                    venue = inst.get("venue") or v.name
+                    inst.setdefault("venue", venue)
+
+                    pk = inst.get("poll_key") or inst.get("slug") or inst.get("asset_id") or inst.get("instrument_key")
+                    if pk is not None:
+                        inst.setdefault("poll_key", str(pk))
+                        canonical_id = f"{venue}:{str(pk)}"
+                        if inst.get("instrument_id") != canonical_id:
+                            inst["instrument_id"] = canonical_id
+
                     markets_writer.write(inst)
 
                 snapshot = {

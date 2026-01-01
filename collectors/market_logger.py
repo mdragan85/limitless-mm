@@ -11,7 +11,8 @@ Discovery should run in a separate process and write the snapshot files.
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
+
 from pathlib import Path
 
 from config.settings import settings
@@ -235,6 +236,60 @@ class MarketLogger:
             }
 
             rec = v.normalizer(snap, full_orderbook=settings.FULL_ORDERBOOK) or snap
+
+            # --- Enforce join-safe invariants at write boundary (non-semantic, minimal) ---
+            rec.setdefault("venue", v.name)
+
+            # Prefer an existing poll_key, otherwise fall back to snapshot info (which already has poll_key)
+            pk = rec.get("poll_key") or info.get("poll_key") or slug
+            if pk is not None:
+                rec.setdefault("poll_key", pk)
+                canonical_id = f"{v.name}:{pk}"
+                if rec.get("instrument_id") != canonical_id:
+                    rec["instrument_id"] = canonical_id
+
+            # Optional numeric timestamp in ms (derive from ts_utc / timestamp; assume UTC if naive)
+            if "ts_ms" not in rec:
+                iso = rec.get("ts_utc") or rec.get("timestamp") or snap.get("timestamp")
+                if iso:
+                    try:
+                        s = iso.replace("Z", "+00:00")
+                        dt = datetime.fromisoformat(s)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        rec["ts_ms"] = int(dt.timestamp() * 1000)
+                    except Exception:
+                        # Never break logging due to timestamp parse issues
+                        pass
+            # ---------------------------------------------------------------------------
+
+            # --- Optional: venue-reported orderbook timestamp (ms since epoch) ---
+            # Polymarket includes orderbook.timestamp (string epoch ms). Limitless does not.
+            if "ob_ts_ms" not in rec:
+                ob = rec.get("orderbook")
+                if isinstance(ob, dict):
+                    ots = ob.get("timestamp")
+                    if ots is not None:
+                        try:
+                            rec["ob_ts_ms"] = int(ots)
+                        except Exception:
+                            pass
+
+            # ---------------------------------------------------------------------------
+            # Write-boundary record contract enforcement
+            #
+            # This is the final choke point before data hits disk.
+            # We enforce system-level invariants here so that:
+            #   - all orderbook records are join-safe across venues
+            #   - timestamps have clear semantics (collector vs venue time)
+            #   - downstream readers can tolerate schema drift safely
+            #
+            # Normalizers may reshape payloads and drop fields; writers must not.
+            # Only additive / corrective changes are allowed here (no market semantics).
+            # ---------------------------------------------------------------------------          
+            rec.setdefault("record_type", "orderbook")
+            rec.setdefault("schema_version", settings.SCHEMA_VERSION_ORDERBOOK)
+
             books_writer.write(rec)
 
         return (loop_successes, loop_failures)
