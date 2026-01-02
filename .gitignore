@@ -3,3 +3,4 @@
 *.jsonl
 .env
 .DS_STORE
+.logs/
