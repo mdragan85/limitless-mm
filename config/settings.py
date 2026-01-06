@@ -34,7 +34,7 @@ class AppSettings:
 
     # Output Logs------------------------------------------------------------------
     OUTPUT_DIR: Path = Path(os.getenv("OUTPUT_DIR", ".outputs/logs"))
-    INPUT_DIR: Path = Path(os.getenv("INPUT_DIR", "/Users/maciejdragan/Python VSCode Projects/limitless_mm/limitless-mm/.outputs/logs"))
+    INPUT_DIR: Path = Path(os.getenv("INPUT_DIR", ".outputs/logs_server"))
 
     # Schema versions (Maybe this out to live somewhere else? )
     SCHEMA_VERSION_ORDERBOOK = 1

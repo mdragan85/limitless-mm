@@ -48,21 +48,22 @@ print(lm_btc_latest)
 
 
 #%%
-from readers.market_catalog.instrument_query import InstrumentQuery
+if False: 
+    from readers.market_catalog.instrument_query import InstrumentQuery
 
-# Build InstrumentQuery directly (no filters assumed)
-q = InstrumentQuery(tuple(cat.instruments.values()))
+    # Build InstrumentQuery directly (no filters assumed)
+    q = InstrumentQuery(tuple(cat.instruments.values()))
 
-# %% Next 20 expiries
-ids, dbg = q.select(top_n=5, debug=True)
-dbg
+    # Next 20 expiries
+    ids, dbg = q.select(top_n=5, debug=True)
+    dbg
 
-# %% active only
+    # active only
 
-ids, dbg = q.is_active(True).select(debug=True)
+    ids, dbg = q.is_active(False).select(debug=True)
 
-for d in dbg:
-    print(d)
+    for d in dbg:
+        print(d)
 
 
 #%%
@@ -75,3 +76,5 @@ hist.instrument          # full InstrumentMeta right here
 df = hist.to_dataframe()
 df.tail()
 
+
+# %%
