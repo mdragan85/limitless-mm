@@ -27,10 +27,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from .parsers import LimitlessParser, PolymarketParser
 from .catalog_models import InstrumentAccum, MarketAccum
 from .models import make_instrument_id
 from .parsers import VenueParser
 from .utils import pretty_dataclass
+from config.settings import settings
 
 from datetime import datetime, timezone
 
@@ -145,26 +147,37 @@ class MarketCatalog:
     Venue-agnostic catalog built from on-disk market metadata logs.
 
     Typical lifecycle:
-    1) Construct with output_dir + venue parsers
+    1) Construct with input_dir + venue parsers
     2) Call refresh()
     3) Query instruments / markets for analysis or readers
 
     The catalog may be rebuilt at any time; it holds no mutable external state.
     """
-
     def __init__(
         self,
-        output_dir: Path,
         venues: Sequence[str],
         parsers: Dict[str, VenueParser],
+        input_dir: Optional[Path] = None,
     ) -> None:
-        self.output_dir = Path(output_dir)
+        
+        self.input_dir = Path(input_dir or settings.INPUT_DIR)
         self.venues = list(venues)
         self.parsers = parsers
 
         self._instruments: Dict[str, InstrumentMeta] = {}
         self._markets: Dict[Tuple[str, str], MarketMeta] = {}
 
+
+    @classmethod
+    def default(cls, input_dir: Path | None = None) -> "MarketCatalog":
+        return cls(
+            venues=["limitless", "polymarket"],
+            parsers={
+                "limitless": LimitlessParser(),
+                "polymarket": PolymarketParser(),
+            },
+            input_dir=input_dir,
+        )
     # ------------------------------------------------------------------
     # Public accessors
     # ------------------------------------------------------------------
@@ -469,12 +482,12 @@ class MarketCatalog:
         Yield JSONL market metadata files for a given venue.
 
         Assumes directory layout:
-          <output_dir>/<venue>/markets/date=YYYY-MM-DD/*.jsonl
+          <input_dir>/<venue>/markets/date=YYYY-MM-DD/*.jsonl
 
         This is intentionally simple; future refactors may push this behind
         a venue-specific layout abstraction.
         """
-        base = self.output_dir / venue / "markets"
+        base = self.input_dir / venue / "markets"
         if not base.exists():
             return []
 
@@ -507,7 +520,7 @@ class MarketCatalog:
         active_ids: set[str] = set()
 
         for venue in self.venues:
-            snap = self.output_dir / venue / "state" / "active_instruments.snapshot.json"
+            snap = self.input_dir / venue / "state" / "active_instruments.snapshot.json"
             if not snap.exists():
                 continue
 
