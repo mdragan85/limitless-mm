@@ -13,14 +13,9 @@ from readers.orderbooks.reader import OrderbookReader
 from readers.orderbooks.stream import OrderbookStream
 from readers.orderbooks.history import OrderbookHistory
 
-cat = MarketCatalog(
-    output_dir=Path(".outputs/logs"),
-    venues=["limitless", "polymarket"],
-    parsers={
-        "limitless": LimitlessParser(),
-        "polymarket": PolymarketParser(),
-    }
-)
+
+#%%
+cat = MarketCatalog.default()
 
 cat.refresh(scan_days=7, all_time=False, use_snapshot=True)
 

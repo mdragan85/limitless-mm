@@ -72,7 +72,7 @@ class OrderbookHistory:
         """
 
         base_dir = input_dir or settings.INPUT_DIR
-        reader = OrderbookReader(output_dir=base_dir)
+        reader = OrderbookReader(input_dir=Path(base_dir))
 
         # Determine date partitions to scan
         if start_dt is not None or end_dt is not None:

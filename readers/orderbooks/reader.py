@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Set
 
+from config.settings import settings
 
 @dataclass(frozen=True)
 class OrderbookReader:
@@ -13,7 +14,7 @@ class OrderbookReader:
 
     Responsibilities:
       - Locate JSONL files under:
-          <output_dir>/<venue>/orderbooks/date=YYYY-MM-DD/orderbooks.part-*.jsonl
+          <input_dir>/<venue>/orderbooks/date=YYYY-MM-DD/orderbooks.part-*.jsonl
       - Stream-parse JSONL lines as dicts
       - Filter by instrument_id(s) and optional [start_ms, end_ms] window
 
@@ -23,7 +24,7 @@ class OrderbookReader:
       - No caching (beyond scanning file lists)
       - No sorting guarantees beyond file order
     """
-    output_dir: Path
+    input_dir: Path = Path(settings.INPUT_DIR)
 
     def iter_snapshots(
         self,
@@ -76,7 +77,7 @@ class OrderbookReader:
         end_ms: Optional[int],
     ) -> Iterator[Dict[str, Any]]:
         for d in dates:
-            day_dir = self.output_dir / venue / "orderbooks" / f"date={d}"
+            day_dir = self.input_dir / venue / "orderbooks" / f"date={d}"
             if not day_dir.exists():
                 continue
 
