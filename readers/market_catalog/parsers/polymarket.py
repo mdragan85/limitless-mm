@@ -38,6 +38,59 @@ _TIME_RANGE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# --- underlying inference ----------------------------------------------------
+
+# Only allow the small approved set. Everything else -> None.
+_ALLOWED_UNDERLYINGS = ("BTC", "ETH", "SOL", "XRP")
+
+# Match tokens in slugs/titles with safe boundaries (spaces, start/end, or separators).
+# Also support full names as a fallback.
+_UNDERLYING_PATTERNS = [
+    ("BTC", re.compile(r"(?:^|[\s\-_./])btc(?:$|[\s\-_./])|\bbitcoin\b", re.IGNORECASE)),
+    ("ETH", re.compile(r"(?:^|[\s\-_./])eth(?:$|[\s\-_./])|\bethereum\b", re.IGNORECASE)),
+    ("SOL", re.compile(r"(?:^|[\s\-_./])sol(?:$|[\s\-_./])|\bsolana\b", re.IGNORECASE)),
+    ("XRP", re.compile(r"(?:^|[\s\-_./])xrp(?:$|[\s\-_./])|\bripple\b", re.IGNORECASE)),
+]
+
+def _infer_underlying_polymarket(rec: Dict[str, Any]) -> Optional[str]:
+    """
+    Infer underlying from stable text fields (slug/title).
+    Strict: returns only BTC/ETH/SOL/XRP; otherwise None.
+    """
+    raw = rec.get("raw_market") or {}
+
+    candidates = [
+        str(rec.get("slug") or ""),
+        str(rec.get("question") or ""),
+        str(raw.get("question") or ""),
+    ]
+
+    # Optional extra signal: series slug/ticker/title sometimes encodes the asset
+    try:
+        events = raw.get("events") or []
+        if events:
+            series = events[0].get("series") or []
+            if series:
+                s0 = series[0]
+                candidates.extend([
+                    str(s0.get("slug") or ""),
+                    str(s0.get("ticker") or ""),
+                    str(s0.get("title") or ""),
+                ])
+    except Exception:
+        pass
+
+    blob = " | ".join([c for c in candidates if c]).strip()
+    if not blob:
+        return None
+
+    for sym, pat in _UNDERLYING_PATTERNS:
+        if pat.search(blob):
+            return sym
+
+    return None
+
+
 def _norm_cadence_from_text(text: str) -> Optional[str]:
     if not text:
         return None
@@ -224,7 +277,7 @@ class PolymarketParser:
             slug=rec.get("slug"),
             expiration_ms=int(rec["expiration"]),
             title=rec.get("question"),
-            underlying=None,               # can be derived later if desired
+            underlying=_infer_underlying_polymarket(rec),
             outcome=rec.get("outcome"),    # e.g. "Up"/"Down"
             rule=rec.get("rule"),
             cadence=_derive_poly_cadence(rec),

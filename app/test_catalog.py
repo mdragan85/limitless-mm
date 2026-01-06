@@ -17,6 +17,7 @@ from readers.orderbooks.history import OrderbookHistory
 #%%
 cat = MarketCatalog.default()
 
+
 cat.refresh(scan_days=7, all_time=False, use_snapshot=True)
 
 
@@ -30,21 +31,21 @@ dfi = cat.instruments_df()
 # --- Latest BTC 15m from Polymarket ---
 pm_btc_15m = max(
     (i for i in cat.instruments.values()
-     if i.venue == "polymarket" and i.cadence == "15m"),
+     if i.venue == "polymarket" and i.cadence == "15m" and i.underlying=='BTC'),
     key=lambda i: i.last_seen_ms
 )
 
 # --- Latest BTC (any cadence) from Limitless ---
 lm_btc_latest = max(
     (i for i in cat.instruments.values()
-     if i.venue == "limitless"),
+     if i.venue == "limitless" and i.underlying=='BTC'),
     key=lambda i: i.last_seen_ms
 )
 
 print(pm_btc_15m) 
 print(lm_btc_latest)
 
-assert False, 'sto here'
+
 
 #%%
 from readers.market_catalog.instrument_query import InstrumentQuery
@@ -68,9 +69,8 @@ for d in dbg:
 
 from readers.orderbooks.history import OrderbookHistory
 
-meta = cat.instruments[ids[0]]
 
-hist = OrderbookHistory.from_instrument(meta)  # scans instrument first/last seen dates
+hist = OrderbookHistory.from_instrument(pm_btc_15m)  # scans instrument first/last seen dates
 hist.instrument          # full InstrumentMeta right here
 df = hist.to_dataframe()
 df.tail()
