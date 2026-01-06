@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+import pandas as pd
+
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
@@ -25,6 +28,42 @@ def _dates_between_utc(d0: date, d1: date) -> list[str]:
         out.append(cur.isoformat())
         cur = cur.fromordinal(cur.toordinal() + 1)
     return out
+
+
+_LEVEL_RE = re.compile(r"^(bid|ask)(\d+)_(px|sz)$")
+
+def orderbook_flat_to_multiindex(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convert flat orderbook columns like:
+        bid1_px, bid1_sz, ask2_px, ask2_sz
+    into a MultiIndex with levels:
+        (level, side, field)
+
+    Non-orderbook columns (t_ms, t_utc, mid, spread, etc.)
+    are left untouched as flat columns.
+    """
+    
+    new_cols = []
+    for col in df.columns:
+        m = _LEVEL_RE.match(col)
+        if m:
+            side, level, field = m.groups()
+            new_cols.append((int(level), side, field))
+        else:
+            new_cols.append(col)
+
+    # Build MultiIndex only if we actually matched something
+    if any(isinstance(c, tuple) for c in new_cols):
+        df = df.copy()
+        df.columns = pd.Index(new_cols, dtype=object)
+        df.columns = pd.MultiIndex.from_tuples(
+            [
+                c if isinstance(c, tuple) else ("", c, "")
+                for c in df.columns
+            ],
+            names=["level", "side", "field"],
+        )
+    return df
 
 @dataclass
 class OrderbookHistory:
@@ -245,3 +284,169 @@ class OrderbookHistory:
                 axis=1,
             )
         return df
+
+    def _normalize_book(self, snap: Mapping[str, Any]) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+        """
+        Canonical representation:
+            bids: [(px, sz)] sorted by px DESC
+            asks: [(px, sz)] sorted by px ASC
+        """
+        raw_bids, raw_asks = self._raw_book_sides(snap)
+
+        bids = self._coerce_levels(raw_bids)
+        asks = self._coerce_levels(raw_asks)
+
+        bids = self._aggregate_by_price(bids)
+        asks = self._aggregate_by_price(asks)
+
+        bids.sort(key=lambda x: x[0], reverse=True)
+        asks.sort(key=lambda x: x[0])
+
+        return bids, asks
+
+    def _raw_book_sides(self, snap: Mapping[str, Any]) -> tuple[list[Any], list[Any]]:
+        """
+        Return raw (bids, asks) lists from a snapshot, without assuming ordering.
+        Venue-specific shape handling lives here.
+        """
+        venue = (snap.get("venue") or getattr(self.instrument, "venue", None) or "").lower()
+
+        if venue == "polymarket":
+            ob = snap.get("orderbook") or {}
+            bids = ob.get("bids") or []
+            asks = ob.get("asks") or []
+            return list(bids), list(asks)
+
+        # default: limitless-like shape
+        bids = snap.get("bids") or []
+        asks = snap.get("asks") or []
+        return list(bids), list(asks)
+
+    @staticmethod
+    def _aggregate_by_price(levels: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        """
+        If the same price appears multiple times, sum sizes.
+        Keeps one level per price.
+        """
+        if not levels:
+            return levels
+        agg: dict[float, float] = {}
+        for px, sz in levels:
+            agg[px] = agg.get(px, 0.0) + sz
+        return [(px, sz) for px, sz in agg.items()]
+
+    @staticmethod
+    def _coerce_levels(levels: Sequence[Any]) -> list[tuple[float, float]]:
+        """
+        Convert a list of {price, size} dicts (or tuples) into [(px, sz), ...] floats.
+        Malformed entries are skipped. No sorting here.
+        """
+        out: list[tuple[float, float]] = []
+        for lvl in levels:
+            try:
+                if isinstance(lvl, dict):
+                    px = float(lvl.get("price"))
+                    sz = float(lvl.get("size"))
+                else:
+                    # allow (px, sz) tuples if they ever appear
+                    px = float(lvl[0])
+                    sz = float(lvl[1])
+            except Exception:
+                continue
+
+            # Skip nonsensical levels; allow 0 price if it ever happens, but not negative.
+            if px < 0 or sz <= 0:
+                continue
+
+            out.append((px, sz))
+        return out
+
+    def levels_df(self, n_levels: int = 1, add_utc=True, multi=False) -> "pd.DataFrame":
+        """
+        Return a wide, timeseries-friendly DataFrame:
+        - one row per snapshot
+        - levels as columns (bid{i}_px, bid{i}_sz, ask{i}_px, ask{i}_sz)
+        - t_ms based on the history's time_field semantics (effective timestamp)
+        """
+        import pandas as pd
+
+        if n_levels < 1:
+            raise ValueError("n_levels must be >= 1")
+
+        rows: list[dict[str, object]] = []
+
+        for snap in self.snapshots:
+            bids, asks = self._normalize_book(snap)
+
+            row: dict[str, object] = {
+                "t_ms": effective_ts_ms(snap,
+                                        time_field=self.time_field,
+                                        fallback_field=self.fallback_time_field),
+                "n_bid_levels": len(bids),
+                "n_ask_levels": len(asks),
+            }
+
+            for i in range(1, n_levels + 1):
+                # bids are best->worst
+                if len(bids) >= i:
+                    px, sz = bids[i - 1]
+                    row[f"bid{i}_px"] = px
+                    row[f"bid{i}_sz"] = sz
+                else:
+                    row[f"bid{i}_px"] = None
+                    row[f"bid{i}_sz"] = None
+
+                # asks are best->worst (lowest first)
+                if len(asks) >= i:
+                    px, sz = asks[i - 1]
+                    row[f"ask{i}_px"] = px
+                    row[f"ask{i}_sz"] = sz
+                else:
+                    row[f"ask{i}_px"] = None
+                    row[f"ask{i}_sz"] = None
+
+            # After populating bid1/ask1 columns in `row`:
+            bpx = row.get("bid1_px")
+            bsz = row.get("bid1_sz")
+            apx = row.get("ask1_px")
+            asz = row.get("ask1_sz")
+
+            if bpx is None or apx is None:
+                row["mid"] = None
+                row["spread"] = None
+                row["micro"] = None
+            else:
+                bpx_f = float(bpx)
+                apx_f = float(apx)
+                row["mid"] = 0.5 * (bpx_f + apx_f)
+                row["spread"] = apx_f - bpx_f
+
+                if bsz is None or asz is None:
+                    row["micro"] = None
+                else:
+                    bsz_f = float(bsz)
+                    asz_f = float(asz)
+                    denom = bsz_f + asz_f
+                    row["micro"] = None if denom <= 0 else (bpx_f * asz_f + apx_f * bsz_f) / denom
+
+
+            rows.append(row)
+
+        df = pd.DataFrame(rows).sort_values("t_ms", kind="mergesort").reset_index(drop=True)
+
+        # Optional...add UTC date
+        if add_utc:
+            df["t_utc"] = (pd.to_datetime(df["t_ms"], unit="ms", utc=True).dt.tz_convert(None))
+            df = df.set_index('t_utc')
+
+        # Optional... convert columsn to multi index L1, L2 etc.
+        if multi:
+            df = orderbook_flat_to_multiindex(df)
+
+        # return 
+        return df
+
+
+
+
+

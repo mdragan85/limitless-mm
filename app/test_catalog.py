@@ -78,3 +78,54 @@ df.tail()
 
 
 # %%
+# pick the first snapshot
+snap = hist.snapshots[0]
+
+bids, asks = hist._normalize_book(snap)
+
+print("Top of book:")
+print("  best bid:", bids[0] if bids else None)
+print("  best ask:", asks[0] if asks else None)
+
+print("\nCounts:")
+print("  n_bid_levels:", len(bids))
+print("  n_ask_levels:", len(asks))
+
+# quick ordering sanity
+if len(bids) > 1:
+    assert bids[0][0] >= bids[1][0]
+if len(asks) > 1:
+    assert asks[0][0] <= asks[1][0]
+
+print("\nOrdering sanity passed.")
+
+# %%
+from collections import Counter
+
+bid_prices = [px for px, _ in bids]
+ask_prices = [px for px, _ in asks]
+
+print("Duplicate bid prices:", [px for px, c in Counter(bid_prices).items() if c > 1])
+print("Duplicate ask prices:", [px for px, c in Counter(ask_prices).items() if c > 1])
+
+
+#%%
+df = hist.levels_df()          # L1
+df2 = hist.levels_df(5)        # L5 if available
+
+df.head()
+
+
+# %%
+
+snap = hist.snapshots[0]
+bids, asks = hist._normalize_book(snap)
+
+print("n_bid_levels:", len(bids), "min_bid_px:", bids[-1][0] if bids else None, "max_bid_px:", bids[0][0] if bids else None)
+print("n_ask_levels:", len(asks), "min_ask_px:", asks[0][0] if asks else None, "max_ask_px:", asks[-1][0] if asks else None)
+
+print("first 5 bids:", bids[:5])
+print("first 5 asks:", asks[:5])
+
+#%%
+df[["t_ms","bid1_px","ask1_px","mid","spread","micro"]].head()
