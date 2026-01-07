@@ -130,10 +130,13 @@ class MarketLogger:
 
     def _maybe_reload_snapshot(self, vs: dict) -> None:
         """
-        If the discovery snapshot has changed, load it and replace active instruments
+        If the discovery snapshot has changed, load it and update active instruments
         for this venue.
 
-        This keeps polling independent of discovery latency.
+        Sticky rule:
+        - If an instrument was previously active but disappears from the snapshot,
+        KEEP it until expiration passes (expiration <= now => drop).
+        - Always drop expired instruments (even if discovery still includes them).
 
         IMPORTANT: poller treats snapshots as read-only; it does NOT write active state.
         """
@@ -155,13 +158,47 @@ class MarketLogger:
                 return
 
             active: dict[str, dict] = vs["active"]
+            old_active = dict(active)  # snapshot of current active set (for stickiness + diffs)
+            old_keys = set(old_active.keys())
 
-            old_keys = set(active.keys())
-            new_keys = set(instruments.keys())
+            now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
 
-            # Replace in-memory active set with snapshot (in-place)
+            def _parse_exp_ms(inst: dict) -> int | None:
+                exp = inst.get("expiration")
+                if exp is None:
+                    return None
+                try:
+                    return int(exp)
+                except Exception:
+                    return None
+
+            def _not_expired(inst: dict) -> bool:
+                exp = _parse_exp_ms(inst)
+                return exp is not None and exp > now_ms
+
+            # 1) Start from new snapshot instruments
+            merged: dict[str, dict] = dict(instruments)
+
+            # 2) Sticky keep: if something existed before but is missing now,
+            #    keep it until expiration passes.
+            for ikey, inst in old_active.items():
+                if ikey in merged:
+                    continue
+                if _not_expired(inst):
+                    merged[ikey] = inst
+
+            # 3) Hard prune: drop anything expired (even if discovery included it)
+            for ikey in list(merged.keys()):
+                inst = merged.get(ikey) or {}
+                exp = _parse_exp_ms(inst)
+                if exp is not None and exp <= now_ms:
+                    del merged[ikey]
+
+            new_keys = set(merged.keys())
+
+            # Replace in-memory active set with merged view (in-place)
             active.clear()
-            active.update(instruments)
+            active.update(merged)
 
             # Prune fail_state so it doesn't grow forever
             fail_state = vs["fail_state"]
@@ -172,30 +209,31 @@ class MarketLogger:
             vs["snapshot_mtime"] = mtime
             vs["snapshot_asof"] = payload.get("asof_ts_utc")
 
-            added = len(new_keys - old_keys)
-            removed = len(old_keys - new_keys)
-
-            print(
-                f"<PollApp>: loaded snapshot venue={vs['venue'].name} "
-                f"count={len(active)} added={added} removed={removed} "
-                f"asof={vs['snapshot_asof']}"
-                )
-            
             added_keys = new_keys - old_keys
             removed_keys = old_keys - new_keys
 
+            print(
+                f"<PollApp>: loaded snapshot venue={vs['venue'].name} "
+                f"count={len(active)} added={len(added_keys)} removed={len(removed_keys)} "
+                f"asof={vs['snapshot_asof']}"
+            )
+
+            # Print added/removed lists using stable dicts
             if added_keys:
                 print(f"<PollApp>: added instruments venue={vs['venue'].name}")
-                _print_instrument_list("+", instruments, added_keys)
+                _print_instrument_list("+", merged, added_keys)
 
             if removed_keys:
                 print(f"<PollApp>: removed instruments venue={vs['venue'].name}")
-                _print_instrument_list("-", active, removed_keys)
-
+                _print_instrument_list("-", old_active, removed_keys)
 
         except Exception as exc:
             # Poller should never die because snapshot read hiccupped
-            print(f"<PollApp|Warning>: failed to reload snapshot venue={vs['venue'].name}: {type(exc).__name__}: {exc}")
+            print(
+                f"<PollApp|Warning>: failed to reload snapshot venue={vs['venue'].name}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
 
     def _poll_once(self, vs: dict, now_mono: float) -> tuple[int, int]:
         """
