@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import httpx
 
 
+PUBIC_SEARCH_LIMIT = 1000
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 CLOB_BASE = "https://clob.polymarket.com"
 
@@ -19,7 +20,7 @@ class PolymarketClient:
             f"{GAMMA_BASE}/public-search",
             params={
                 "q": query,
-                "limit_per_type": 50,
+                "limit_per_type": PUBIC_SEARCH_LIMIT,
                 "search_tags": False,
                 "search_profiles": False,
                 "optimized": True,
@@ -124,6 +125,7 @@ class PolymarketClient:
         for ridx, rule in enumerate(rules):
             for q in rule.get("queries", []) or []:
                 blob = self.public_search(q)
+
                 found: set[str] = set()
                 self._collect_market_slugs(blob, found)
                 for slug in found:
@@ -220,6 +222,8 @@ class PolymarketClient:
                         "raw_market": d,  # keep for debugging; can drop later
                     })
 
+        debug_print(out)
+
         return out
 
     @staticmethod
@@ -240,3 +244,46 @@ class PolymarketClient:
         resp = self.http.get(f"{CLOB_BASE}/book", params={"token_id": token_id})
         resp.raise_for_status()
         return resp.json()
+
+
+
+# -------------------------------------------------------------
+# DEBUG: dump discovered instruments (market-level view)
+# -------------------------------------------------------------
+def debug_print(out):
+
+    rows = {}
+    for inst in out:
+        key = (
+            inst.get("venue"),
+            inst.get("slug"),
+            inst.get("expiration"),
+        )
+        rows[key] = inst  # collapse YES/NO tokens
+
+    def _fmt_utc(ms):
+        if not ms:
+            return "None"
+        return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat()
+
+    debug_rows = sorted(
+        rows.values(),
+        key=lambda x: (
+            x.get("venue") or "",
+            (x.get("question") or x.get("slug") or ""),
+            x.get("expiration") or 0,
+        ),
+    )
+
+    print("\n=== DISCOVERED MARKETS (DEBUG) ===")
+    for r in debug_rows:
+        print(
+            f"{r.get('venue'):10s} | "
+            f"slug={r.get('slug'):40s} | "
+            f"{(r.get('question') or '')[:70]:70s} | "
+            f"expires={_fmt_utc(r.get('expiration'))}"
+        )
+    print(f"=== TOTAL MARKETS: {len(debug_rows)} ===\n")
+# -------------------------------------------------------------
+# END: dump discovered instruments (market-level view)
+# -------------------------------------------------------------

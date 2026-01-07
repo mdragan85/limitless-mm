@@ -18,6 +18,15 @@
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
       "justMyCode": true
+    },
+    {
+      "name": "Run Discovery",
+      "type": "python",
+      "request": "launch",
+      "module": "app.run_discovery",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": true
     }
   ]
 }
