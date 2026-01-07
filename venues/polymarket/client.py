@@ -251,9 +251,6 @@ class PolymarketClient:
                     })
 
                 break  # don't let multiple rules double-emit same market unless you want that
-        
-        debug_print(out)
-
         return out
 
     def discover_instruments(self, rules: list[dict], mode: str | None = None) -> list[dict]:

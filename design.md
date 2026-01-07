@@ -1,6 +1,6 @@
 # Market Data Collector – Design Notes
 
-> Last updated: 2025-12-31 — Discovery rules split from runtime settings; discovery now client-owned per venue
+> Last updated: 2026-01-07 — Polymarket crypto discovery split into deterministic `/markets` enumeration + legacy search mode
 
 ## Architecture Overview
 
@@ -50,7 +50,7 @@ A **multi-venue discovery runner**.
 Responsibilities:
 - Run `discover_fn` for each venue on a slower cadence
 - Discover the full active set of instruments for the venue on each run
-- Derive a stable `instrument_key` per instrument (see below)
+- Derive a stable `instrument_key` per instrument
 - Write:
   - `state/active_instruments.snapshot.json` (atomic overwrite)
   - `markets/` JSONL logs (metadata / instrument records) on discovery cadence
@@ -70,7 +70,7 @@ Fields:
 - `out_dir` – venue-scoped output root
 - `discover_fn` – venue-specific discovery function (used by DiscoveryService)
 
-**Current convention:** `discover_fn` is typically a thin wrapper around `client.discover_instruments(rules)` so discovery logic is **owned by the venue client**, not app glue code.
+**Current convention:** `discover_fn` is typically a thin wrapper around `client.discover_instruments(...)`, so discovery logic is **owned by the venue client**, not app glue code.
 
 ## Configuration Model
 
@@ -82,8 +82,8 @@ This repo distinguishes:
   - poll cadence
   - output directory root
 - **Discovery rules** (what markets to watch): venue-scoped rule modules
-  - `config/polymarket_rules.py` → `POLYMARKET_RULES`
-  - `config/limitless_rules.py` → `LIMITLESS_RULES`
+  - `config/polymarket_rules.py`
+  - `config/limitless_rules.py`
 
 Environment variables are intentionally minimal. The only supported env override is:
 
@@ -111,11 +111,10 @@ Contract notes:
 - `poll_key` is the opaque identifier required by the venue client to fetch an order book
 
 Common optional fields:
-- `underlying`
-- `title` / `question`
-- `outcome` (for venues where a market has multiple books)
-- `rule` (discovery rule name / provenance)
-- `raw` (venue response payload for audit/debug)
+- `question` / `title`
+- `outcome`
+- `rule` (discovery provenance)
+- `raw_market` (venue payload for audit/debug)
 
 ### Instrument Identity
 
@@ -128,7 +127,7 @@ A stable `instrument_key` is defined as:
 Rationale:
 - `poll_key` is already present in discovery output
 - It is stable and unique per order book
-- It avoids venue-specific key derivation logic
+- Avoids venue-specific key derivation logic
 
 This key is used as the primary key in snapshots and all in-memory poller state.
 
@@ -142,57 +141,77 @@ Shape:
 
 ```json
 {
-  "asof_ts_utc": "2025-12-30T19:40:07.857844",
+  "asof_ts_utc": "2026-01-07T19:40:07.857844",
   "venue": "polymarket",
   "count": 32,
   "instruments": {
-    "<instrument_key>": { "<instrument dict>" },
-    "...": "..."
+    "<instrument_key>": { "<instrument dict>" }
   }
 }
 ```
 
 Notes:
-- Written via atomic replace (write temp + rename) so the poller never sees partial content
-- Poller treats this as read-only “source of truth”
-- Poller may keep a cached copy in memory until a newer snapshot arrives
+- Written via atomic replace (write temp + rename)
+- Poller treats this as read-only source of truth
+- Cached in memory until a newer snapshot arrives
 
 ## Venue-Specific Discovery Semantics
 
 ### Limitless
-- Discovery input: `LIMITLESS_RULES` (currently a list of underlyings; may evolve into structured rules)
+
+- Discovery input: `LIMITLESS_RULES`
 - Discovery implementation: `LimitlessVenueClient.discover_instruments(rules)`
 - Discovery output: **one instrument per CLOB market**
 - Polling:
   - `poll_key = market.slug`
   - `instrument_id = "BOOK"`
-- Filtering (current):
-  - Exclude AMM markets (e.g., `tradeType != "clob"` or `tokens is None`)
-  - Keep funded/active, not-expired markets (as implemented in the client)
+- Filtering:
+  - Exclude AMM markets
+  - Keep funded, tradable, non-expired markets
 
 ### Polymarket
-- Discovery input: `POLYMARKET_RULES`
-- Discovery implementation: `PolymarketClient.discover_instruments(rules)` (Gamma search + hydration)
-- Each market has **two CLOBs** (YES/NO), modeled as **two instruments**
-- Polling:
-  - `poll_key = asset_id` (token / CLOB identifier)
-  - `market_id = Gamma market id`
-  - `instrument_id = asset_id`
+
+Polymarket discovery now supports **two explicit modes**, owned by the venue client:
+
+#### 1. Crypto Markets (`mode = "crypto_markets"`)
+
+- Discovery path: **Gamma `GET /markets` pagination**
+- Purpose: deterministic, complete enumeration of crypto intraday markets
+- Hard filters (source-of-truth):
+  - `enableOrderBook == true`
+  - `archived == false`
+  - `closed == false`
+  - `acceptingOrders == true`
+- Classification:
+  - Uses `events[0].series[0].slug` and `recurrence`
+  - Avoids search, titles, or relevance ranking
+- Time semantics:
+  - `eventStartTime` defines window open
+  - `endDate` defines window close
+- Output:
+  - **Two instruments per market** (YES / NO CLOBs)
+  - Schema identical to legacy discovery output
+
+This path is used for **crypto intraday, hourly, and daily markets**, where series metadata is authoritative.
+
+#### 2. Thematic / Search-Based (`mode = "search"`)
+
+- Discovery path: `GET /public-search` → slug hydration via `GET /markets`
+- Purpose: thematic, non-crypto, or text-discoverable markets
+- Retained for future expansion
+- Less deterministic; not used for crypto
+
+Both modes emit **identical instrument dictionaries** and are interchangeable downstream.
 
 ## Persistence Layout
 
-For each venue under `settings.OUTPUT_DIR` (or env `OUTPUT_DIR`):
+For each venue under `settings.OUTPUT_DIR`:
 
 - `orderbooks/date=YYYY-MM-DD/`  
   Rotating JSONL logs of order book snapshots
 
-  Notes:
-  - Files are named `orderbooks.part-XXXX.jsonl`
-  - Part numbers are monotonic across process restarts
-  - Downstream consumers must sort by record timestamp for strict ordering
-
 - `markets/date=YYYY-MM-DD/`  
-  Discovery cadence JSONL logs of discovered instrument/market metadata
+  Discovery cadence JSONL logs of market / instrument metadata
 
 - `state/active_instruments.snapshot.json`  
   Atomic snapshot consumed by the poller
