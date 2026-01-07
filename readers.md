@@ -121,7 +121,7 @@ Key fields:
 - `underlying` (optional; see notes below)
 - `outcome` (optional; e.g. YES/NO or Up/Down)
 - `rule` (optional; discovery provenance)
-- `cadence` (optional; derived window length; e.g. `15m`, `1h`, `1d`, `1w`)
+- `cadence` (optional; derived window length; e.g. `15m`, `1h`, `4h`, `1d`, `1w`)
 - `is_active` (optional annotation; see *Active Semantics*)
 - `first_seen_ms`, `last_seen_ms`
 - `extra` (small, venue-specific subset)
@@ -235,37 +235,51 @@ Notes:
 
 ---
 
-## Summary & Health Checks
+## Query & Selection Layer (Notebook-First)
 
-MarketCatalog provides venue-agnostic summaries to validate ingestion:
+Selection is intentionally **separate** from MarketCatalog.
 
-- Instruments per venue
-- Markets per venue
-- Instruments-per-market ratio
-- Cadence distribution
-- Missing-underlying diagnostics
+The project provides a **lightweight query helper** (`InstrumentQuery`) that:
 
-This catches:
-- Missing sides of multi-instrument markets
-- Partial ingestion
-- Venue schema drift
+- Operates purely in-memory on `InstrumentMeta`
+- Performs **filtering, ordering, and truncation**
+- Does **not** touch the filesystem
+- Does **not** cache or persist state
+
+`InstrumentQuery` is explicitly **not**:
+- A database
+- A SQL-like DSL
+- A required abstraction
+
+It exists solely to:
+- Make common notebook selections concise
+- Centralize ordering semantics (`top_n`, sort direction)
+- Return either:
+  - instrument IDs
+  - `InstrumentMeta` objects
+  - or a human-readable DataFrame view
+
+MarketCatalog remains the authoritative universe; queries merely select subsets.
 
 ---
 
-## Relationship to Query & Readers
+## Relationship to Readers
 
-MarketCatalog is the **entry point** for:
+Downstream readers operate on **InstrumentMeta**, not raw IDs.
 
-- Query / selection layers
-- Orderbook readers
-- Research notebooks
-- Offline analytics
+Typical flow in notebooks:
 
-Downstream components should depend on:
-- `MarketMeta`
-- `InstrumentMeta`
+```
+MarketCatalog
+   ↓
+InstrumentQuery (selection only)
+   ↓
+InstrumentMeta
+   ↓
+OrderbookHistory / OrderbookStream
+```
 
-**Never directly on discovery logs.**
+This avoids object juggling and keeps metadata attached to the data it describes.
 
 ---
 
@@ -287,7 +301,10 @@ Typical layering:
 - **OrderbookHistory** (in-memory evolution)  
   Materializes a bounded list of snapshots and provides notebook-friendly views
   (e.g. L1/LN DataFrames derived from nested bids/asks).
+
   `OrderbookHistory` carries its `InstrumentMeta` to avoid object juggling in notebooks.
+
+---
 
 ### Timestamps in OrderbookHistory
 
@@ -296,11 +313,28 @@ Orderbook logs may contain:
 - `ob_ts_ms`: venue “as-of” timestamp (present for Polymarket; not universal)
 
 `OrderbookHistory` supports configurable time semantics via:
-- `time_field` (primary)
+- `time_field`
 - `fallback_time_field`
 
 All ordering, deduplication, and windowing uses a shared
 `effective_ts_ms(...)` helper to ensure consistency.
+
+---
+
+## Summary & Health Checks
+
+MarketCatalog provides venue-agnostic summaries to validate ingestion:
+
+- Instruments per venue
+- Markets per venue
+- Instruments-per-market ratio
+- Cadence distribution
+- Missing-underlying diagnostics
+
+This catches:
+- Missing sides of multi-instrument markets
+- Partial ingestion
+- Venue schema drift
 
 ---
 
@@ -317,8 +351,8 @@ All ordering, deduplication, and windowing uses a shared
 
 ## Next Planned Work
 
-- Minimal query helpers for selecting markets / instruments (notebooks-first)
-- Additional orderbook-derived metrics (e.g. depth/imbalance) layered on top of L1/LN views
+- Debugging ingestion completeness (cadence coverage, missing markets)
+- Additional orderbook-derived metrics layered on top of L1/LN views
 - Optional future distinction between:
   - *theoretical activity* vs
   - *operational availability*

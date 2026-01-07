@@ -12,7 +12,7 @@ from readers.market_catalog.parsers import LimitlessParser, PolymarketParser
 from readers.orderbooks.reader import OrderbookReader
 from readers.orderbooks.stream import OrderbookStream
 from readers.orderbooks.history import OrderbookHistory
-
+from readers.market_catalog.instrument_query import InstrumentQuery
 
 #%%
 cat = MarketCatalog.default()
@@ -25,25 +25,46 @@ cat.refresh(scan_days=7, all_time=False, use_snapshot=True)
 dfm = cat.markets_df()
 dfi = cat.instruments_df()
 
-
 #%%
+#q = InstrumentQuery.from_catalog(cat).venues("polymarket").cadence_in("15m").underlying_in("BTC")
 
-# --- Latest BTC 15m from Polymarket ---
-pm_btc_15m = max(
-    (i for i in cat.instruments.values()
-     if i.venue == "polymarket" and i.cadence == "15m" and i.underlying=='BTC'),
-    key=lambda i: i.last_seen_ms
-)
+q = InstrumentQuery.from_catalog(cat).venues("polymarket")
+ids1, _ = q.select(top_n=5, sort_by="expiration_ms", descending=True, per_market="one")
+ids2, _ = q.select(top_n=5, sort_by="expiration_ms", descending=True, per_market="one")
+assert ids1 == ids2
 
-# --- Latest BTC (any cadence) from Limitless ---
-lm_btc_latest = max(
-    (i for i in cat.instruments.values()
-     if i.venue == "limitless" and i.underlying=='BTC'),
-    key=lambda i: i.last_seen_ms
-)
+# deterministic + sorted
+#q.df(top_n=10, per_market="one").head(10)
 
-print(pm_btc_15m) 
-print(lm_btc_latest)
+# compare: should be sorted by expiration_ms ascending
+#q.df(top_n=10, per_market="all")[["expiration_ms","instrument_id"]].head(10)
+
+
+
+assert False, 'stop here'
+
+
+
+    #%%
+if False: 
+    # --- Latest BTC 15m from Polymarket ---
+    pm_btc_15m = max(
+        (i for i in cat.instruments.values()
+        if i.venue == "polymarket" and i.cadence == "15m" and i.underlying=='BTC'),
+        key=lambda i: i.last_seen_ms
+    )
+
+    # --- Latest BTC (any cadence) from Limitless ---
+    lm_btc_latest = max(
+        (i for i in cat.instruments.values()
+        if i.venue == "limitless" and i.underlying=='BTC'),
+        key=lambda i: i.last_seen_ms
+    )
+
+    print(pm_btc_15m) 
+    print(lm_btc_latest)
+
+
 
 
 
@@ -66,66 +87,66 @@ if False:
         print(d)
 
 
-#%%
+    #%%
 
-from readers.orderbooks.history import OrderbookHistory
-
-
-hist = OrderbookHistory.from_instrument(lm_btc_latest)  # scans instrument first/last seen dates
-hist.instrument          # full InstrumentMeta right here
-df = hist.to_dataframe()
-df.tail()
+    from readers.orderbooks.history import OrderbookHistory
 
 
-# %%
-# pick the first snapshot
-snap = hist.snapshots[0]
-
-bids, asks = hist._normalize_book(snap)
-
-print("Top of book:")
-print("  best bid:", bids[0] if bids else None)
-print("  best ask:", asks[0] if asks else None)
-
-print("\nCounts:")
-print("  n_bid_levels:", len(bids))
-print("  n_ask_levels:", len(asks))
-
-# quick ordering sanity
-if len(bids) > 1:
-    assert bids[0][0] >= bids[1][0]
-if len(asks) > 1:
-    assert asks[0][0] <= asks[1][0]
-
-print("\nOrdering sanity passed.")
-
-# %%
-from collections import Counter
-
-bid_prices = [px for px, _ in bids]
-ask_prices = [px for px, _ in asks]
-
-print("Duplicate bid prices:", [px for px, c in Counter(bid_prices).items() if c > 1])
-print("Duplicate ask prices:", [px for px, c in Counter(ask_prices).items() if c > 1])
+    hist = OrderbookHistory.from_instrument(lm_btc_latest)  # scans instrument first/last seen dates
+    hist.instrument          # full InstrumentMeta right here
+    df = hist.to_dataframe()
+    df.tail()
 
 
-#%%
-df = hist.levels_df()          # L1
-df2 = hist.levels_df(5)        # L5 if available
+    # %%
+    # pick the first snapshot
+    snap = hist.snapshots[0]
 
-df.head()
+    bids, asks = hist._normalize_book(snap)
+
+    print("Top of book:")
+    print("  best bid:", bids[0] if bids else None)
+    print("  best ask:", asks[0] if asks else None)
+
+    print("\nCounts:")
+    print("  n_bid_levels:", len(bids))
+    print("  n_ask_levels:", len(asks))
+
+    # quick ordering sanity
+    if len(bids) > 1:
+        assert bids[0][0] >= bids[1][0]
+    if len(asks) > 1:
+        assert asks[0][0] <= asks[1][0]
+
+    print("\nOrdering sanity passed.")
+
+    # %%
+    from collections import Counter
+
+    bid_prices = [px for px, _ in bids]
+    ask_prices = [px for px, _ in asks]
+
+    print("Duplicate bid prices:", [px for px, c in Counter(bid_prices).items() if c > 1])
+    print("Duplicate ask prices:", [px for px, c in Counter(ask_prices).items() if c > 1])
 
 
-# %%
+    #%%
+    df = hist.levels_df()          # L1
+    df2 = hist.levels_df(5)        # L5 if available
 
-snap = hist.snapshots[0]
-bids, asks = hist._normalize_book(snap)
+    df.head()
 
-print("n_bid_levels:", len(bids), "min_bid_px:", bids[-1][0] if bids else None, "max_bid_px:", bids[0][0] if bids else None)
-print("n_ask_levels:", len(asks), "min_ask_px:", asks[0][0] if asks else None, "max_ask_px:", asks[-1][0] if asks else None)
 
-print("first 5 bids:", bids[:5])
-print("first 5 asks:", asks[:5])
+    # %%
 
-#%%
-df[["t_ms","bid1_px","ask1_px","mid","spread","micro"]].head()
+    snap = hist.snapshots[0]
+    bids, asks = hist._normalize_book(snap)
+
+    print("n_bid_levels:", len(bids), "min_bid_px:", bids[-1][0] if bids else None, "max_bid_px:", bids[0][0] if bids else None)
+    print("n_ask_levels:", len(asks), "min_ask_px:", asks[0][0] if asks else None, "max_ask_px:", asks[-1][0] if asks else None)
+
+    print("first 5 bids:", bids[:5])
+    print("first 5 asks:", asks[:5])
+
+    #%%
+    df[["t_ms","bid1_px","ask1_px","mid","spread","micro"]].head()
