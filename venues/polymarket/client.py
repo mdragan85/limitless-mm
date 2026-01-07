@@ -15,6 +15,44 @@ class PolymarketClient:
         self.http = httpx.Client(timeout=timeout)
 
     # ---------- Low-level API ----------
+    def _gamma_get(self, path: str, params: dict | None = None):
+        resp = self.http.get(f"{GAMMA_BASE}{path}", params=params or {})
+        resp.raise_for_status()
+        return resp.json()
+
+    def list_markets_paginated(
+        self,
+        *,
+        limit: int = 200,
+        offset: int = 0,
+        max_pages: int | None = None,
+        gamma_params: dict | None = None,
+    ):
+        """
+        Yield markets from Gamma GET /markets using limit/offset pagination.
+        """
+        params = dict(gamma_params or {})
+        params.setdefault("order", "id")
+        params.setdefault("ascending", False)
+
+        page = 0
+        while True:
+            params["limit"] = limit
+            params["offset"] = offset
+
+            data = self._gamma_get("/markets", params=params)
+
+            if not data:
+                break
+
+            for m in data:
+                yield m
+
+            offset += limit
+            page += 1
+            if max_pages is not None and page >= max_pages:
+                break
+
     def public_search(self, query: str) -> dict:
         resp = self.http.get(
             f"{GAMMA_BASE}/public-search",
@@ -79,7 +117,161 @@ class PolymarketClient:
                 return []
         return []
 
-    def discover_instruments(self, rules: list[dict]) -> list[dict]:
+    def discover_crypto_markets(self, rules: list[dict]) -> list[dict]:
+        """
+        Enumerate crypto markets via GET /markets pagination (no public-search).
+
+        Emits same instrument schema as discover_instruments (1 per token/outcome).
+        """
+        # --- tiny local helpers (copy from your discover_instruments to stay consistent) ---
+        def _iso_to_ms(s: str) -> int | None:
+            try:
+                s = s.replace("Z", "+00:00")
+                dt = datetime.fromisoformat(s)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return int(dt.timestamp() * 1000)
+            except Exception:
+                return None
+
+        def _get_start_ms(raw_market: dict, fields: list[str]) -> int | None:
+            for k in fields:
+                v = raw_market.get(k)
+                if not v:
+                    continue
+                if isinstance(v, (int, float)):
+                    vv = int(v)
+                    return vv * 1000 if vv < 10_000_000_000 else vv
+                if isinstance(v, str):
+                    ms = _iso_to_ms(v)
+                    if ms is not None:
+                        return ms
+            return None
+
+        def _first_series(raw_market: dict) -> dict:
+            events = raw_market.get("events") or []
+            if not events:
+                return {}
+            series = events[0].get("series") or []
+            return series[0] if series else {}
+
+        now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+
+        out: list[dict] = []
+
+        # Optional: server-side narrowing to reduce scan volume
+        # closed=false is safe for “active snapshot” discovery.
+        gamma_params = {"closed": False}
+
+        for d in self.list_markets_paginated(limit=200, gamma_params=gamma_params):
+            # ----- hard filters -----
+            # hard filters: tradable now
+            if not d.get("enableOrderBook", False):
+                continue
+            if d.get("archived", False):
+                continue
+            if d.get("closed", False):
+                continue
+            if d.get("acceptingOrders") is not True:
+                continue
+
+            slug = d.get("slug") or ""
+            if not slug:
+                continue
+
+            series = _first_series(d)
+            series_slug = (series.get("slug") or "")
+            recurrence = (series.get("recurrence") or "")
+
+            # parse end/start
+            end_ms = self._parse_end_ms(d)
+            if end_ms is None:
+                continue
+            minutes = self._minutes_to_expiry(end_ms)
+
+            # match a rule (crypto-style rule shape)
+            for rule in rules:
+                if rule.get("mode") != "crypto_markets":
+                    continue
+
+                prefixes = rule.get("series_slug_prefixes") or []
+                allowed = set(rule.get("allowed_recurrence") or [])
+
+                if prefixes and not any(series_slug.startswith(p) for p in prefixes):
+                    continue
+                if allowed and recurrence not in allowed:
+                    continue
+
+                # expiry window
+                min_m = rule.get("min_minutes_to_expiry", float("-inf"))
+                max_m = rule.get("max_minutes_to_expiry", float("inf"))
+                if minutes < min_m or minutes > max_m:
+                    continue
+
+                # active window check (optional but you already use it)
+                lead_ms = int(rule.get("lead_ms", 60_000))
+                start_fields = rule.get("start_time_fields", ["eventStartTime", "startTime"])
+                start_ms = _get_start_ms(d, start_fields)
+                if start_ms is None:
+                    continue
+                if not (start_ms - lead_ms <= now_ms < end_ms):
+                    continue
+
+                # outcomes/tokens
+                token_ids = self._parse_json_list_field(d.get("clobTokenIds"))
+                outcomes = self._parse_json_list_field(d.get("outcomes"))
+                outcome_prices = self._parse_json_list_field(d.get("outcomePrices"))
+
+                if len(token_ids) < 2:
+                    break  # this market isn't usable
+
+                if not outcomes or len(outcomes) != len(token_ids):
+                    outcomes = [f"OUTCOME_{i}" for i in range(len(token_ids))]
+
+                if not outcome_prices or len(outcome_prices) != len(token_ids):
+                    outcome_prices = [None for _ in range(len(token_ids))]
+
+                question = d.get("question") or d.get("title") or ""
+                market_id = str(d.get("id"))
+
+                for i, token_id in enumerate(token_ids):
+                    out.append({
+                        "venue": self.venue,
+                        "market_id": market_id,
+                        "instrument_id": str(token_id),
+                        "poll_key": str(token_id),
+                        "slug": slug,
+                        "question": question,
+                        "expiration": end_ms,
+                        "minutes_to_expiry": minutes,
+                        "outcome": outcomes[i],
+                        "outcome_price": outcome_prices[i],
+                        "rule": rule.get("name"),
+                        "raw_market": d,
+                    })
+
+                break  # don't let multiple rules double-emit same market unless you want that
+        
+        debug_print(out)
+
+        return out
+
+    def discover_instruments(self, rules: list[dict], mode: str | None = None) -> list[dict]:
+        """
+        Dispatcher:
+          - mode="crypto_markets": enumerate via /markets
+          - mode="search": public-search -> hydrate slugs
+        If mode is None, auto-select based on rules.
+        """
+        if mode is None:
+            mode = "crypto_markets" if any(r.get("mode") == "crypto_markets" for r in rules) else "search"
+
+        if mode == "crypto_markets":
+            return self.discover_crypto_markets(rules)
+
+        return self._discover_search(rules)
+
+    def _discover_search(self, rules: list[dict]) -> list[dict]:
         """
         Polymarket discovery v2.
 
@@ -142,8 +334,6 @@ class PolymarketClient:
                 continue
 
             # Market-level hard filters (source-of-truth)
-            if not d.get("active", False):
-                continue
             if d.get("closed", False):
                 continue
             if d.get("archived", False):
@@ -221,8 +411,6 @@ class PolymarketClient:
                         "rule": rule.get("name"),
                         "raw_market": d,  # keep for debugging; can drop later
                     })
-
-        debug_print(out)
 
         return out
 
