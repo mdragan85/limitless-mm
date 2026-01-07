@@ -32,20 +32,6 @@ def _now_ms() -> int:
     return time.time_ns() // 1_000_000
 
 
-def _infer_is_active(expiration_ms: int, now_ms: int) -> bool:
-    """
-    Infer whether an instrument is active at a given time.
-
-    Definition:
-        active := expiration_ms > now_ms
-
-    Kept as a helper so:
-    - filtering and presentation can share the same definition
-    - tests can target one function
-    """
-    return int(expiration_ms) > int(now_ms)
-
-
 @dataclass(frozen=True)
 class InstrumentQuery:
     """
