@@ -20,6 +20,24 @@ from collectors.venue_runtime import VenueRuntime
 from storage.jsonl_writer import JsonlRotatingWriter
 
 
+
+def _print_instrument_list(prefix: str, instruments: dict[str, dict], keys: set[str]):
+    if not keys:
+        return
+
+    # Compute max slug width for alignment
+    slugs = [instruments[k].get("slug", "") for k in keys if k in instruments]
+    max_slug = max((len(s) for s in slugs), default=0)
+
+    for k in sorted(keys):
+        inst = instruments.get(k)
+        if not inst:
+            continue
+        slug = inst.get("slug", "")
+        title = inst.get("question") or inst.get("title") or ""
+        print(f"  {prefix} slug={slug:<{max_slug}} | {title}")
+
+
 class MarketLogger:
     """
     Multi-venue order book poller.
@@ -162,6 +180,18 @@ class MarketLogger:
                 f"count={len(active)} added={added} removed={removed} "
                 f"asof={vs['snapshot_asof']}"
                 )
+            
+            added_keys = new_keys - old_keys
+            removed_keys = old_keys - new_keys
+
+            if added_keys:
+                print(f"<PollApp>: added instruments venue={vs['venue'].name}")
+                _print_instrument_list("+", instruments, added_keys)
+
+            if removed_keys:
+                print(f"<PollApp>: removed instruments venue={vs['venue'].name}")
+                _print_instrument_list("-", active, removed_keys)
+
 
         except Exception as exc:
             # Poller should never die because snapshot read hiccupped
