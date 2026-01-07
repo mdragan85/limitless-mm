@@ -71,7 +71,7 @@ if False:
 from readers.orderbooks.history import OrderbookHistory
 
 
-hist = OrderbookHistory.from_instrument(pm_btc_15m)  # scans instrument first/last seen dates
+hist = OrderbookHistory.from_instrument(lm_btc_latest)  # scans instrument first/last seen dates
 hist.instrument          # full InstrumentMeta right here
 df = hist.to_dataframe()
 df.tail()

@@ -386,6 +386,19 @@ class OrderbookHistory:
                 "n_ask_levels": len(asks),
             }
 
+            # observation skew between collector time and venue "as-of" time
+            ts_ms = snap.get("ts_ms")
+            ob_ts_ms = snap.get("ob_ts_ms")
+
+            if ts_ms is not None and ob_ts_ms is not None:
+                try:
+                    row["ts_ob_lag"] = int(ts_ms) - int(ob_ts_ms)
+                except Exception:
+                    row["ts_ob_lag"] = None
+            else:
+                row["ts_ob_lag"] = None
+
+
             for i in range(1, n_levels + 1):
                 # bids are best->worst
                 if len(bids) >= i:

@@ -1,6 +1,6 @@
 # MarketCatalog (Metadata Index & Analysis Layer)
 
-The **MarketCatalog** is a **read-only, venue-agnostic metadata index** built from discovery logs written under `markets/`.
+The **MarketCatalog** is a **read-only, venue-agnostic metadata index** built from discovery logs written under venue-partitioned `markets/` directories.
 
 It exists to support:
 
@@ -69,7 +69,7 @@ This distinction is essential because:
 ```
 DiscoveryService
    ↓
-markets/date=YYYY-MM-DD/*.jsonl
+<venue>/markets/date=YYYY-MM-DD/*.jsonl
    ↓
 VenueParser (per venue)
    ↓
@@ -88,8 +88,8 @@ MarketCatalog
 
 MarketCatalog reads **only metadata**:
 
-- `markets/date=YYYY-MM-DD/*.jsonl`
-- (optional) `state/active_instruments.snapshot.json`
+- `<venue>/markets/date=YYYY-MM-DD/*.jsonl`
+- (optional) `<venue>/state/active_instruments.snapshot.json`
 
 It **never** reads order book logs.
 
@@ -139,6 +139,7 @@ Rules:
 - Prefer explicit venue fields when present
 - Otherwise infer from stable, low-ambiguity tokens in `slug`/`title`
 - Keep inference logic **venue-scoped** inside that venue's parser
+- Only infer from a **small, explicit allowlist** of known underlyings
 
 ---
 
@@ -242,6 +243,7 @@ MarketCatalog provides venue-agnostic summaries to validate ingestion:
 - Markets per venue
 - Instruments-per-market ratio
 - Cadence distribution
+- Missing-underlying diagnostics
 
 This catches:
 - Missing sides of multi-instrument markets
@@ -277,24 +279,28 @@ Typical layering:
   Streams JSONL orderbook records from disk and filters by `instrument_id`.
 
   Typical layout:
-  - `.outputs/logs/<venue>/orderbooks/date=YYYY-MM-DD/orderbooks.part-*.jsonl`
+  - `<input_dir>/<venue>/orderbooks/date=YYYY-MM-DD/orderbooks.part-*.jsonl`
 
 - **OrderbookStream** (identity + convenience)  
   Binds an `InstrumentMeta` to an `OrderbookReader` and provides `iter_snapshots(...)`.
 
 - **OrderbookHistory** (in-memory evolution)  
-  Materializes a bounded list of snapshots and provides notebook-friendly views (e.g. DataFrames).
-  `OrderbookHistory` carries the `InstrumentMeta` it was constructed from to avoid juggling objects in notebooks.
+  Materializes a bounded list of snapshots and provides notebook-friendly views
+  (e.g. L1/LN DataFrames derived from nested bids/asks).
+  `OrderbookHistory` carries its `InstrumentMeta` to avoid object juggling in notebooks.
 
 ### Timestamps in OrderbookHistory
 
 Orderbook logs may contain:
 - `ts_ms`: collector fetch/write time (always present)
-- `ob_ts_ms`: venue “as-of” timestamp (present for Polymarket; not for all venues)
+- `ob_ts_ms`: venue “as-of” timestamp (present for Polymarket; not universal)
 
-`OrderbookHistory` supports configurable time semantics via `time_field`:
-- default: `time_field="ts_ms"`
-- optional: `time_field="ob_ts_ms"` when available (with a small refresh overlap to avoid missing/duplicating records)
+`OrderbookHistory` supports configurable time semantics via:
+- `time_field` (primary)
+- `fallback_time_field`
+
+All ordering, deduplication, and windowing uses a shared
+`effective_ts_ms(...)` helper to ensure consistency.
 
 ---
 
@@ -312,7 +318,7 @@ Orderbook logs may contain:
 ## Next Planned Work
 
 - Minimal query helpers for selecting markets / instruments (notebooks-first)
-- Timeseries-friendly orderbook views (e.g. L1/L2 price/size columns derived from nested bids/asks)
+- Additional orderbook-derived metrics (e.g. depth/imbalance) layered on top of L1/LN views
 - Optional future distinction between:
   - *theoretical activity* vs
   - *operational availability*
