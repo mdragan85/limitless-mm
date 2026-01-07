@@ -11,5 +11,4 @@ set +a
 
 mkdir -p .logs
 
-python -m app.run_discovery 2>&1 | tee -a .logs/discovery.log
-
+python -u -m app.run_discovery
