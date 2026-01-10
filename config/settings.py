@@ -30,7 +30,7 @@ class AppSettings:
 
     # Orderbook Logging Settings---------------------------------------------------
     FULL_ORDERBOOK: bool = True         # Full book vs. top of book
-    POLL_INTERVAL: float = 1.0          # How often (in seconds) to poll orderbooks
+    POLL_INTERVAL: float = 0.01          # How often (in seconds) to poll orderbooks
 
     # Output Logs------------------------------------------------------------------
     OUTPUT_DIR: Path = Path(os.getenv("OUTPUT_DIR", ".outputs/logs"))
@@ -39,6 +39,13 @@ class AppSettings:
     # Schema versions (Maybe this out to live somewhere else? )
     SCHEMA_VERSION_ORDERBOOK = 1
     SCHEMA_VERSION_MARKETS = 1
+
+
+
+    # NEW - Multithreading Poller
+    POLL_MAX_WORKERS = 16
+    POLL_MAX_INFLIGHT = 16
+    ORDERBOOK_TIMEOUT_SECONDS = 2.0
 
 # Create a single config instance for import
 settings = AppSettings()
