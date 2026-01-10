@@ -41,11 +41,11 @@ class AppSettings:
 
 
     # Poller concurrency (per venue) -------------------------------------------
-    POLL_MAX_WORKERS_POLY: int = 32     # threads per venue for orderbook fetch
-    POLL_MAX_INFLIGHT_POLY: int = 32    # max concurrent orderbook requests per venue
+    POLL_MAX_WORKERS_POLY: int = 16     # threads per venue for orderbook fetch
+    POLL_MAX_INFLIGHT_POLY: int = 8     # max concurrent orderbook requests per venue
 
-    POLL_MAX_WORKERS_LIMITLESS: int = 8
-    POLL_MAX_INFLIGHT_LIMITLESS: int = 2
+    POLL_MAX_WORKERS_LIMITLESS: int = 2
+    POLL_MAX_INFLIGHT_LIMITLESS: int = 1
 
     # Orderbook HTTP timeouts (per venue) --------------------------------------
     ORDERBOOK_TIMEOUT_POLY: float = 2.0
