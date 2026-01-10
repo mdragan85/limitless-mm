@@ -8,11 +8,14 @@ This module does NOT perform discovery and does NOT write market-metadata logs.
 Discovery should run in a separate process and write the snapshot files.
 """
 
+import re
 import json
 import os
 import time
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import deque
+
 
 from pathlib import Path
 
@@ -64,7 +67,8 @@ class MarketLogger:
     # -------------------------
     def _init_venue_state(self) -> dict:
         """
-        One-time setup: writers, snapshot path tracking, and per-venue counters.
+        One-time setup: writers, snapshot path tracking, per-venue counters,
+        and per-venue concurrency limits.
         """
         venue_state: dict[str, dict] = {}
 
@@ -78,10 +82,41 @@ class MarketLogger:
                 settings.FSYNC_SECONDS,
             )
 
+            stats_writer = JsonlRotatingWriter(
+                v.out_dir / "poll_stats" / f"date={current_date}",
+                "poll_stats",
+                settings.ROTATE_MINUTES,
+                settings.FSYNC_SECONDS,
+            )
+
+            errors_writer = JsonlRotatingWriter(
+                v.out_dir / "poll_errors" / f"date={current_date}",
+                "poll_errors",
+                settings.ROTATE_MINUTES,
+                settings.FSYNC_SECONDS,
+            )
+
             # Kept for now as a small wrapper around a dict; poller treats this as in-memory only.
             active: dict[str, dict] = {}
 
             snapshot_path = v.out_dir / "state" / "active_instruments.snapshot.json"
+
+            # -------------------------------
+            # Per-venue concurrency settings
+            # -------------------------------
+            if v.name == "polymarket":
+                max_workers = getattr(settings, "POLL_MAX_WORKERS_POLY", 32)
+                max_inflight = getattr(settings, "POLL_MAX_INFLIGHT_POLY", max_workers)
+            elif v.name == "limitless":
+                max_workers = getattr(settings, "POLL_MAX_WORKERS_LIMITLESS", 8)
+                max_inflight = getattr(settings, "POLL_MAX_INFLIGHT_LIMITLESS", min(2, max_workers))
+            else:
+                # Safe defaults for any future venue
+                max_workers = getattr(settings, "POLL_MAX_WORKERS_DEFAULT", 8)
+                max_inflight = getattr(settings, "POLL_MAX_INFLIGHT_DEFAULT", max_workers)
+
+            # Keep inflight <= workers to avoid bursty queued submissions
+            max_inflight = min(max_inflight, max_workers)
 
             venue_state[v.name] = {
                 "venue": v,
@@ -100,10 +135,20 @@ class MarketLogger:
                 "fail_state": {},
                 "cooldown_until": 0.0,
 
-                # --- NEW: per-venue thread pool for orderbook fetch ---
-                "executor": ThreadPoolExecutor(max_workers=settings.POLL_MAX_WORKERS),   # start conservative
-                "max_inflight": settings.POLL_MAX_INFLIGHT,
+                # Per-venue thread pool for orderbook fetch
+                "executor": ThreadPoolExecutor(max_workers=max_workers),
+                "max_inflight": max_inflight,
+
+                # Debug visibility
+                "max_workers": max_workers,
+
+                # stats/errors
+                "stats_writer": stats_writer,
+                "stats_last_mono": 0.0,
+                "errors_writer": errors_writer,
             }
+
+            print(f"<PollApp>: venue={v.name} concurrency workers={max_workers} inflight={max_inflight}")
 
         return venue_state
 
@@ -243,8 +288,16 @@ class MarketLogger:
         """
         Poll all active instruments once for one venue, in parallel.
 
-        Only the network fetch is parallelized.
-        All state mutation (fail_state, cooldown, writes) remains single-threaded.
+        Additions:
+        - rate-limit / error telemetry (aggregated)
+        - fetch latency metrics (ms)
+        - immediate cooldown on HTTP 429
+        - optional sampled error logging for later review
+
+        Still true:
+        - only network fetch is parallel
+        - backoff/cooldown state mutation happens on main thread
+        - file writes happen on main thread
         """
         # Honor per-venue cooldown without blocking other venues
         if now_mono < vs["cooldown_until"]:
@@ -257,8 +310,59 @@ class MarketLogger:
         executor = vs["executor"]
         max_inflight = vs["max_inflight"]
 
+        # --- NEW: telemetry accumulators for this loop ---
+        submitted = 0
         loop_failures = 0
         loop_successes = 0
+
+        http_429 = 0
+        http_4xx = 0
+        http_5xx = 0
+        timeouts = 0
+        other_errs = 0
+
+        # Keep a small rolling window of latencies so we can compute p50/p95 cheaply
+        # Store in vs so you can see longer-term trends without external tooling.
+        lat_buf: deque[int] = vs.setdefault("lat_ms_buf", deque(maxlen=5000))
+
+        # -------------------------------
+        # helpers: status + timeout detect
+        # -------------------------------
+        _status_re = re.compile(r"\[(\d{3})\]")
+
+        def _extract_status_code(exc: Exception) -> int | None:
+            """
+            Best-effort status extractor across:
+            - httpx.HTTPStatusError (Polymarket)
+            - RuntimeError("... [429] ...") (Limitless wrapper)
+            - requests exceptions (if they leak through)
+            """
+            # httpx HTTPStatusError (has response)
+            resp = getattr(exc, "response", None)
+            if resp is not None:
+                sc = getattr(resp, "status_code", None)
+                if isinstance(sc, int):
+                    return sc
+
+            # Limitless wraps requests.HTTPError into RuntimeError with "[status]"
+            m = _status_re.search(str(exc))
+            if m:
+                try:
+                    return int(m.group(1))
+                except Exception:
+                    return None
+
+            return None
+
+        def _is_timeout(exc: Exception) -> bool:
+            """
+            Conservative timeout detection without importing httpx/requests exception types.
+            """
+            name = type(exc).__name__.lower()
+            if "timeout" in name:
+                return True
+            msg = str(exc).lower()
+            return ("timed out" in msg) or ("timeout" in msg)
 
         # -------------------------------
         # 1) Select eligible instruments
@@ -268,14 +372,7 @@ class MarketLogger:
             st = fail_state.get(ikey, {"count": 0, "next_ok": 0.0, "last_log": 0.0})
             if now_mono < st["next_ok"]:
                 continue
-
-            # Capture only what workers need (avoid races with snapshot reload)
-            eligible.append((
-                ikey,
-                info.get("poll_key"),
-                info,
-                st,
-            ))
+            eligible.append((ikey, info.get("poll_key"), info, st))
 
         # Cap inflight work so we don't overwhelm the venue
         eligible = eligible[:max_inflight]
@@ -284,8 +381,24 @@ class MarketLogger:
         # 2) Submit fetch jobs
         # -------------------------------
         futures = {}
+
+        def _fetch(poll_key: str):
+            """
+            Worker function: returns (ok, payload_or_exc, latency_ms, status_code)
+            """
+            t0 = time.perf_counter()
+            try:
+                ob = v.client.get_orderbook(poll_key)
+                ms = int((time.perf_counter() - t0) * 1000)
+                return (True, ob, ms, None)
+            except Exception as exc:
+                ms = int((time.perf_counter() - t0) * 1000)
+                sc = _extract_status_code(exc)
+                return (False, exc, ms, sc)
+
         for ikey, poll_key, info, st in eligible:
-            fut = executor.submit(v.client.get_orderbook, poll_key)
+            submitted += 1
+            fut = executor.submit(_fetch, poll_key)
             futures[fut] = (ikey, poll_key, info, st)
 
         # -------------------------------
@@ -296,16 +409,38 @@ class MarketLogger:
             slug = info.get("slug")
             mid = info.get("market_id")
 
-            try:
-                raw_ob = fut.result()
+            ok, payload, lat_ms, status_code = fut.result()
+            lat_buf.append(lat_ms)
+
+            if ok:
+                raw_ob = payload
                 # success: reset failure state
                 fail_state[ikey] = {"count": 0, "next_ok": 0.0, "last_log": 0.0}
                 loop_successes += 1
-
-            except Exception as exc:
+            else:
+                exc = payload
                 loop_failures += 1
                 st["count"] += 1
 
+                # --- NEW: classify failures ---
+                if status_code == 429:
+                    http_429 += 1
+                elif isinstance(status_code, int) and 400 <= status_code <= 499:
+                    http_4xx += 1
+                elif isinstance(status_code, int) and 500 <= status_code <= 599:
+                    http_5xx += 1
+                elif _is_timeout(exc):
+                    timeouts += 1
+                else:
+                    other_errs += 1
+
+                # --- NEW: immediate cooldown on 429 (prevents hammering into bans) ---
+                if status_code == 429:
+                    # Let this be configurable; default is conservative.
+                    cd = getattr(settings, "RATE_LIMIT_COOLDOWN_SECONDS", 30)
+                    vs["cooldown_until"] = max(vs["cooldown_until"], now_mono + cd)
+
+                # Backoff stays exactly as before
                 backoff = min(60, 2 ** min(st["count"], 6))
                 st["next_ok"] = now_mono + backoff
 
@@ -314,11 +449,31 @@ class MarketLogger:
                         f"[WARN] get_orderbook failed "
                         f"venue={v.name} ikey={ikey} mid={mid} slug={slug} "
                         f"count={st['count']} backoff={backoff}s "
+                        f"status={status_code} latency_ms={lat_ms} "
                         f"err={type(exc).__name__}: {exc}"
                     )
                     st["last_log"] = now_mono
 
                 fail_state[ikey] = st
+
+                # --- OPTIONAL: sampled error log for later review ---
+                errw = vs.get("errors_writer")
+                sample_every = getattr(settings, "POLL_ERROR_SAMPLE_EVERY", 0)  # 0 disables
+                if errw is not None and sample_every and (st["count"] % sample_every == 0):
+                    errw.write({
+                        "ts_utc": datetime.utcnow().isoformat(),
+                        "ts_ms": int(datetime.now(tz=timezone.utc).timestamp() * 1000),
+                        "venue": v.name,
+                        "market_id": mid,
+                        "slug": slug,
+                        "instrument_key": ikey,
+                        "poll_key": poll_key,
+                        "status": status_code,
+                        "latency_ms": lat_ms,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc)[:500],
+                    })
+
                 continue
 
             # -------------------------------
@@ -377,6 +532,44 @@ class MarketLogger:
             rec.setdefault("schema_version", settings.SCHEMA_VERSION_ORDERBOOK)
 
             books_writer.write(rec)
+
+        # -------------------------------
+        # 5) Periodic poll stats logging
+        # -------------------------------
+        stats_writer = vs.get("stats_writer")
+        every = getattr(settings, "POLL_STATS_EVERY_SECONDS", 10)
+        last = vs.get("stats_last_mono", 0.0)
+
+        if stats_writer is not None and (now_mono - last) >= every:
+            # compute p50 / p95 from recent buffer slice
+            lat_list = list(lat_buf)[-min(len(lat_buf), 500):]  # last 500 samples
+            lat_list.sort()
+            def _pct(p: float) -> int | None:
+                if not lat_list:
+                    return None
+                idx = int(p * (len(lat_list) - 1))
+                return lat_list[idx]
+
+            stats_writer.write({
+                "ts_utc": datetime.utcnow().isoformat(),
+                "ts_ms": int(datetime.now(tz=timezone.utc).timestamp() * 1000),
+                "venue": v.name,
+                "active_count": len(active),
+                "submitted": submitted,
+                "successes": loop_successes,
+                "failures": loop_failures,
+                "http_429": http_429,
+                "http_4xx": http_4xx,
+                "http_5xx": http_5xx,
+                "timeouts": timeouts,
+                "other_errs": other_errs,
+                "lat_p50_ms": _pct(0.50),
+                "lat_p95_ms": _pct(0.95),
+                "cooldown_remaining_s": max(0.0, vs["cooldown_until"] - now_mono),
+                "max_inflight": max_inflight,
+                "max_workers": vs.get("max_workers"),
+            })
+            vs["stats_last_mono"] = now_mono
 
         return (loop_successes, loop_failures)
 

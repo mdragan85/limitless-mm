@@ -39,13 +39,21 @@ class AppSettings:
     SCHEMA_VERSION_ORDERBOOK = 1
     SCHEMA_VERSION_MARKETS = 1
 
-    # Poller concurrency -------------------------------------------------------
-    POLL_MAX_WORKERS: int = 32        # threads per venue for orderbook fetch
-    POLL_MAX_INFLIGHT: int = 32       # max concurrent orderbook requests per venue
 
-    # Orderbook HTTP timeouts --------------------------------------------------
-    ORDERBOOK_TIMEOUT_POLY: float = 2.0   # seconds
+    # Poller concurrency (per venue) -------------------------------------------
+    POLL_MAX_WORKERS_POLY: int = 32     # threads per venue for orderbook fetch
+    POLL_MAX_INFLIGHT_POLY: int = 32    # max concurrent orderbook requests per venue
+
+    POLL_MAX_WORKERS_LIMITLESS: int = 8
+    POLL_MAX_INFLIGHT_LIMITLESS: int = 2
+
+    # Orderbook HTTP timeouts (per venue) --------------------------------------
+    ORDERBOOK_TIMEOUT_POLY: float = 2.0
     ORDERBOOK_TIMEOUT_LIMITLESS: float = 2.5
+
+    POLL_STATS_EVERY_SECONDS: int = 10          # write one stats record every N seconds
+    RATE_LIMIT_COOLDOWN_SECONDS: int = 30       # cooldown on first HTTP 429
+    POLL_ERROR_SAMPLE_EVERY: int = 5            # write 1 sampled error every Nth consecutive failure per instrument (0 disables)
 
 
 # Create a single config instance for import
