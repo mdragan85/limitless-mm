@@ -27,7 +27,6 @@ class AppSettings:
     # Discovery Settings ----------------------------------------------------------
     DISCOVER_EVERY_SECONDS: int = 60    # How often to run Discovery
 
-
     # Orderbook Logging Settings---------------------------------------------------
     FULL_ORDERBOOK: bool = True         # Full book vs. top of book
     POLL_INTERVAL: float = 0.01         # How long to sleep after polling
