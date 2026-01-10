@@ -56,5 +56,38 @@ class AppSettings:
     POLL_ERROR_SAMPLE_EVERY: int = 5            # write 1 sampled error every Nth consecutive failure per instrument (0 disables)
 
 
+    # --- Adaptive throttling (AIMD) ---
+    AIMD_ENABLED: bool = True
+
+    # Cooldown when we see 429s (per venue)
+    RATE_LIMIT_COOLDOWN_SECONDS: int = 30
+
+    # Periodic stats/errors logging
+    POLL_STATS_EVERY_SECONDS: int = 10
+    POLL_ERROR_SAMPLE_EVERY: int = 3  # 0 disables; 3 logs every 3rd failure per instrument
+
+    # AIMD behavior (start, then slowly probe upward)
+    AIMD_START_INFLIGHT: int = 4
+
+    # Per-venue ceilings (hard caps)
+    AIMD_INFLIGHT_CEILING_POLY: int = 32
+    AIMD_INFLIGHT_CEILING_LIMITLESS: int = 4
+
+    # Polymarket AIMD thresholds
+    AIMD_STABLE_SECONDS_POLY: int = 300
+    AIMD_ADJUST_MIN_SECONDS_POLY: int = 60
+    AIMD_LAT_P95_HIGH_MS_POLY: int = 1500
+    AIMD_LAT_P95_LOW_MS_POLY: int = 800
+    AIMD_FAIL_RATE_HIGH_POLY: float = 0.25
+
+    # Limitless AIMD thresholds (more conservative)
+    AIMD_STABLE_SECONDS_LIMITLESS: int = 600
+    AIMD_ADJUST_MIN_SECONDS_LIMITLESS: int = 120
+    AIMD_LAT_P95_HIGH_MS_LIMITLESS: int = 2000
+    AIMD_LAT_P95_LOW_MS_LIMITLESS: int = 1000
+    AIMD_FAIL_RATE_HIGH_LIMITLESS: float = 0.20
+
+
+
 # Create a single config instance for import
 settings = AppSettings()

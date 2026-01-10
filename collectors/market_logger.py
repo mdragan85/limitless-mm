@@ -17,6 +17,12 @@ Discovery should run in a separate process and write the snapshot files.
   - add proper rollover for *all* writers (books + stats + errors)
   - add proper shutdown for executors
   - keep concurrency boundary strict: only network fetch is parallel
+
+2026-01 adaptive notes (optional, per-venue):
+- Add AIMD inflight controller (additive increase / multiplicative decrease)
+- Goal: maximum sustainable throughput with near-zero 429s
+- Independent per venue (Polymarket and Limitless adapt separately)
+- Only affects how many requests are in-flight per loop; does not change discovery.
 """
 
 from __future__ import annotations
@@ -89,6 +95,16 @@ class PollCounters:
 
 
 @dataclass
+class AimdState:
+    """Per-venue AIMD inflight control state (poller-owned)."""
+    inflight: int
+    ceiling: int
+
+    stable_since_mono: float = 0.0
+    last_adjust_mono: float = 0.0
+
+
+@dataclass
 class VenueState:
     """All poller-owned runtime state for a venue."""
     venue: VenueRuntime
@@ -119,6 +135,9 @@ class VenueState:
     lat_ms_buf: deque[int] = field(default_factory=lambda: deque(maxlen=5000))
     stats_last_mono: float = 0.0
 
+    # adaptive inflight control (optional)
+    aimd: Optional[AimdState] = None
+
 
 # -------------------------
 # Error classification helpers
@@ -127,12 +146,7 @@ _STATUS_RE = re.compile(r"\[(\d{3})\]")
 
 
 def _extract_status_code(exc: Exception) -> Optional[int]:
-    """
-    Best-effort status extractor across:
-      - httpx.HTTPStatusError (has .response.status_code)
-      - RuntimeError("... [429] ...") (Limitless wrapper)
-      - other exceptions: return None
-    """
+    """Best-effort status extractor across httpx/requests/wrapped errors."""
     resp = getattr(exc, "response", None)
     if resp is not None:
         sc = getattr(resp, "status_code", None)
@@ -166,23 +180,20 @@ def _pct_from_sorted(values: list[int], p: float) -> Optional[int]:
     return values[idx]
 
 
+def _p95_from_deque(dq: deque[int]) -> Optional[int]:
+    """Compute p95 from the last ~500 latency samples in a deque."""
+    if not dq:
+        return None
+    xs = list(dq)[-min(len(dq), 500):]
+    xs.sort()
+    return xs[int(0.95 * (len(xs) - 1))]
+
+
 # -------------------------
 # MarketLogger
 # -------------------------
 class MarketLogger:
-    """
-    Multi-venue order book poller.
-
-    Responsibilities:
-    - Read per-venue active set snapshots from discovery (atomic JSON file writes)
-    - Maintain in-memory per-instrument backoff state and per-venue cooldown
-    - Poll order book snapshots and write normalized records to JSONL with rotation
-
-    Non-responsibilities:
-    - Market discovery / selection / filtering
-    - Market metadata logging
-    - Trading / strategy / execution
-    """
+    """Multi-venue order book poller."""
 
     def __init__(self, venues: list[VenueRuntime]):
         self.venues = venues
@@ -193,13 +204,7 @@ class MarketLogger:
     # Venue init & lifecycle
     # -------------------------
     def _venue_limits(self, venue_name: str) -> VenueLimits:
-        """
-        Get per-venue concurrency limits from settings with safe defaults.
-
-        Rule of thumb:
-          - inflight is the *real throttle*
-          - keep inflight <= workers to avoid queued bursts
-        """
+        """Get per-venue concurrency limits from settings with safe defaults."""
         if venue_name == "polymarket":
             w = getattr(settings, "POLL_MAX_WORKERS_POLY", getattr(settings, "POLL_MAX_WORKERS", 32))
             i = getattr(settings, "POLL_MAX_INFLIGHT_POLY", getattr(settings, "POLL_MAX_INFLIGHT", w))
@@ -210,46 +215,57 @@ class MarketLogger:
             w = getattr(settings, "POLL_MAX_WORKERS_DEFAULT", getattr(settings, "POLL_MAX_WORKERS", 8))
             i = getattr(settings, "POLL_MAX_INFLIGHT_DEFAULT", getattr(settings, "POLL_MAX_INFLIGHT", w))
 
-        i = min(int(i), int(w))
         w = max(1, int(w))
-        i = max(1, int(i))
+        i = max(1, min(int(i), w))
         return VenueLimits(max_workers=w, max_inflight=i)
 
-    def _open_writers(self, v: VenueRuntime, date_str: str) -> tuple[JsonlRotatingWriter, JsonlRotatingWriter, JsonlRotatingWriter]:
-        """
-        Open all writers for a venue for a given UTC date.
+    def _init_aimd(self, venue_name: str, limits: VenueLimits) -> Optional[AimdState]:
+        """Create per-venue AIMD state from settings. Returns None if disabled."""
+        enabled = bool(getattr(settings, "AIMD_ENABLED", False))
+        if not enabled:
+            return None
 
-        books_writer is required.
-        stats/errors writers are cheap and make debugging sustainable.
-        """
+        # ceilings (cap by workers to avoid queued bursts)
+        if venue_name == "polymarket":
+            ceiling = int(getattr(settings, "AIMD_INFLIGHT_CEILING_POLY", limits.max_inflight))
+        elif venue_name == "limitless":
+            ceiling = int(getattr(settings, "AIMD_INFLIGHT_CEILING_LIMITLESS", limits.max_inflight))
+        else:
+            ceiling = int(getattr(settings, "AIMD_INFLIGHT_CEILING_DEFAULT", limits.max_inflight))
+
+        ceiling = max(1, min(ceiling, limits.max_workers))
+
+        start = getattr(settings, "AIMD_START_INFLIGHT", None)
+        if start is None:
+            start = limits.max_inflight
+
+        inflight = max(1, min(int(start), ceiling))
+        return AimdState(inflight=inflight, ceiling=ceiling)
+
+    def _open_writers(self, v: VenueRuntime, date_str: str) -> tuple[JsonlRotatingWriter, JsonlRotatingWriter, JsonlRotatingWriter]:
+        """Open all writers for a venue for a given UTC date."""
         books_writer = JsonlRotatingWriter(
             v.out_dir / "orderbooks" / f"date={date_str}",
             "orderbooks",
             settings.ROTATE_MINUTES,
             settings.FSYNC_SECONDS,
         )
-
         stats_writer = JsonlRotatingWriter(
             v.out_dir / "poll_stats" / f"date={date_str}",
             "poll_stats",
             settings.ROTATE_MINUTES,
             settings.FSYNC_SECONDS,
         )
-
         errors_writer = JsonlRotatingWriter(
             v.out_dir / "poll_errors" / f"date={date_str}",
             "poll_errors",
             settings.ROTATE_MINUTES,
             settings.FSYNC_SECONDS,
         )
-
         return books_writer, stats_writer, errors_writer
 
     def _init_venue_state(self) -> dict[str, VenueState]:
-        """
-        One-time setup: writers, snapshot path tracking, per-venue counters,
-        per-venue executor, and per-venue concurrency limits.
-        """
+        """One-time setup: writers, snapshot tracking, executor, and limits."""
         venue_state: dict[str, VenueState] = {}
 
         for v in self.venues:
@@ -270,16 +286,23 @@ class MarketLogger:
                 snapshot_path=snap_path,
                 executor=executor,
                 limits=limits,
+                aimd=self._init_aimd(v.name, limits),
             )
 
             venue_state[v.name] = vs
-            print(f"<PollApp>: venue={v.name} concurrency workers={limits.max_workers} inflight={limits.max_inflight}")
+
+            if vs.aimd is None:
+                print(f"<PollApp>: venue={v.name} concurrency workers={limits.max_workers} inflight={limits.max_inflight}")
+            else:
+                print(
+                    f"<PollApp>: venue={v.name} concurrency workers={limits.max_workers} "
+                    f"inflight={limits.max_inflight} aimd_inflight={vs.aimd.inflight} aimd_ceiling={vs.aimd.ceiling}"
+                )
 
         return venue_state
 
     def _close_venue_state(self, vs: VenueState) -> None:
         """Best-effort cleanup of writers and executor."""
-        # Writers
         for w in (vs.books_writer, vs.stats_writer, vs.errors_writer):
             if w is None:
                 continue
@@ -288,28 +311,22 @@ class MarketLogger:
             except Exception:
                 pass
 
-        # Executor
         if vs.executor is not None:
             try:
                 vs.executor.shutdown(wait=True, cancel_futures=True)
             except TypeError:
-                # older Python may not support cancel_futures; 3.13 does
                 vs.executor.shutdown(wait=True)
             except Exception:
                 pass
 
     def _rollover_if_needed(self, vs: VenueState) -> None:
-        """
-        Midnight UTC rollover for one venue:
-        close all writers and open new date-partitioned writers.
-        """
+        """Midnight UTC rollover: close all writers and open new date writers."""
         v = vs.venue
         old_date = vs.current_date
         new_date = datetime.utcnow().strftime("%Y-%m-%d")
         if new_date == old_date:
             return
 
-        # Close all writers for the old date (best effort)
         try:
             for w in (vs.books_writer, vs.stats_writer, vs.errors_writer):
                 if w is not None:
@@ -323,19 +340,10 @@ class MarketLogger:
             print(f"<PollApp>: rollover venue={v.name} {old_date} -> {new_date}")
 
     # -------------------------
-    # Snapshot reload (unchanged semantics)
+    # Snapshot reload (sticky semantics)
     # -------------------------
     def _maybe_reload_snapshot(self, vs: VenueState) -> None:
-        """
-        If the discovery snapshot has changed, load it and update active instruments.
-
-        Sticky rule:
-        - If an instrument was previously active but disappears from the snapshot,
-          KEEP it until expiration passes (expiration <= now => drop).
-        - Always drop expired instruments (even if discovery still includes them).
-
-        IMPORTANT: poller treats snapshots as read-only; it does NOT write active state.
-        """
+        """Reload snapshot if changed; keep instruments sticky until expiration."""
         snap_path = vs.snapshot_path
 
         try:
@@ -371,17 +379,14 @@ class MarketLogger:
                 exp = _parse_exp_ms(inst)
                 return exp is not None and exp > now_ms
 
-            # 1) Start from new snapshot instruments
             merged: dict[str, dict] = dict(instruments)
 
-            # 2) Sticky keep: if something existed before but is missing now, keep until expiry
             for ikey, inst in old_active.items():
                 if ikey in merged:
                     continue
                 if _not_expired(inst):
                     merged[ikey] = inst
 
-            # 3) Hard prune: drop anything expired (even if discovery still includes it)
             for ikey in list(merged.keys()):
                 inst = merged.get(ikey) or {}
                 exp = _parse_exp_ms(inst)
@@ -390,11 +395,9 @@ class MarketLogger:
 
             new_keys = set(merged.keys())
 
-            # Replace active in-place
             vs.active.clear()
             vs.active.update(merged)
 
-            # Prune fail_state so it doesn't grow forever
             for k in list(vs.fail_state.keys()):
                 if k not in vs.active:
                     del vs.fail_state[k]
@@ -426,25 +429,112 @@ class MarketLogger:
             )
 
     # -------------------------
-    # Cooldown policy (unchanged + optional 429 shortcut)
+    # Cooldown policy
     # -------------------------
     def _maybe_apply_cooldown(self, vs: VenueState, successes: int, failures: int, now_mono: float) -> None:
         """If many instruments are failing, cool down this venue only (non-blocking)."""
-        active = vs.active
-        v = vs.venue
-
-        if failures >= max(3, len(active) // 2):
+        if failures >= max(3, len(vs.active) // 2):
             cooldown = 10
             vs.cooldown_until = now_mono + cooldown
             print(
-                f"[WARN] high failure rate this loop for venue={v.name} "
+                f"[WARN] high failure rate this loop for venue={vs.venue.name} "
                 f"(failures={failures}, successes={successes}). Cooling down {cooldown}s."
             )
 
     def _cooldown_on_429(self, vs: VenueState, now_mono: float) -> None:
         """Immediate cooldown on 429 to avoid hammering into bans."""
-        cd = getattr(settings, "RATE_LIMIT_COOLDOWN_SECONDS", 30)
-        vs.cooldown_until = max(vs.cooldown_until, now_mono + float(cd))
+        cd = float(getattr(settings, "RATE_LIMIT_COOLDOWN_SECONDS", 30))
+        vs.cooldown_until = max(vs.cooldown_until, now_mono + cd)
+
+    # -------------------------
+    # Inflight control (AIMD-aware)
+    # -------------------------
+    def _current_inflight_limit(self, vs: VenueState) -> int:
+        """Return current inflight cap for this venue (AIMD if enabled)."""
+        if vs.aimd is None:
+            return vs.limits.max_inflight
+        # Never exceed workers; never exceed ceiling; never exceed configured max_inflight (safety)
+        return max(1, min(vs.aimd.inflight, vs.aimd.ceiling, vs.limits.max_workers, vs.limits.max_inflight))
+
+    def _aimd_params(self, venue_name: str) -> dict[str, float | int]:
+        """Per-venue AIMD thresholds (kept simple; pull from settings)."""
+        if venue_name == "polymarket":
+            return {
+                "stable_s": float(getattr(settings, "AIMD_STABLE_SECONDS_POLY", 300)),
+                "adjust_min_s": float(getattr(settings, "AIMD_ADJUST_MIN_SECONDS_POLY", 60)),
+                "p95_hi": int(getattr(settings, "AIMD_LAT_P95_HIGH_MS_POLY", 1500)),
+                "p95_lo": int(getattr(settings, "AIMD_LAT_P95_LOW_MS_POLY", 800)),
+                "fail_hi": float(getattr(settings, "AIMD_FAIL_RATE_HIGH_POLY", 0.25)),
+            }
+        if venue_name == "limitless":
+            return {
+                "stable_s": float(getattr(settings, "AIMD_STABLE_SECONDS_LIMITLESS", 600)),
+                "adjust_min_s": float(getattr(settings, "AIMD_ADJUST_MIN_SECONDS_LIMITLESS", 120)),
+                "p95_hi": int(getattr(settings, "AIMD_LAT_P95_HIGH_MS_LIMITLESS", 2000)),
+                "p95_lo": int(getattr(settings, "AIMD_LAT_P95_LOW_MS_LIMITLESS", 1000)),
+                "fail_hi": float(getattr(settings, "AIMD_FAIL_RATE_HIGH_LIMITLESS", 0.20)),
+            }
+        return {
+            "stable_s": float(getattr(settings, "AIMD_STABLE_SECONDS_DEFAULT", 600)),
+            "adjust_min_s": float(getattr(settings, "AIMD_ADJUST_MIN_SECONDS_DEFAULT", 120)),
+            "p95_hi": int(getattr(settings, "AIMD_LAT_P95_HIGH_MS_DEFAULT", 2000)),
+            "p95_lo": int(getattr(settings, "AIMD_LAT_P95_LOW_MS_DEFAULT", 1000)),
+            "fail_hi": float(getattr(settings, "AIMD_FAIL_RATE_HIGH_DEFAULT", 0.25)),
+        }
+
+    def _maybe_adjust_aimd(self, vs: VenueState, counters: PollCounters, now_mono: float) -> None:
+        """Adjust AIMD inflight cap based on 429s, failure rate, and latency."""
+        if vs.aimd is None:
+            return
+
+        # Nothing to learn from empty loops
+        submitted = max(1, counters.submitted)
+        fail_rate = counters.failures / submitted
+        p95 = _p95_from_deque(vs.lat_ms_buf)
+
+        params = self._aimd_params(vs.venue.name)
+
+        if vs.aimd.stable_since_mono <= 0.0:
+            vs.aimd.stable_since_mono = now_mono
+            vs.aimd.last_adjust_mono = now_mono
+            return
+
+        # Multiplicative decrease on any 429
+        if counters.http_429 > 0:
+            old = vs.aimd.inflight
+            vs.aimd.inflight = max(1, vs.aimd.inflight // 2)
+            vs.aimd.inflight = min(vs.aimd.inflight, vs.aimd.ceiling, vs.limits.max_workers, vs.limits.max_inflight)
+            vs.aimd.stable_since_mono = now_mono
+            vs.aimd.last_adjust_mono = now_mono
+            print(f"<AIMD>: venue={vs.venue.name} 429_seen old_inflight={old} new_inflight={vs.aimd.inflight}")
+            return
+
+        # Gentle decrease on stress (high fail or high latency)
+        stressed = (fail_rate >= params["fail_hi"]) or (p95 is not None and p95 >= params["p95_hi"])
+        if stressed:
+            old = vs.aimd.inflight
+            vs.aimd.inflight = max(1, vs.aimd.inflight - 1)
+            vs.aimd.inflight = min(vs.aimd.inflight, vs.aimd.ceiling, vs.limits.max_workers, vs.limits.max_inflight)
+            vs.aimd.stable_since_mono = now_mono
+            vs.aimd.last_adjust_mono = now_mono
+            reason = "fail_rate" if fail_rate >= params["fail_hi"] else "p95_latency"
+            print(f"<AIMD>: venue={vs.venue.name} decrease reason={reason} old_inflight={old} new_inflight={vs.aimd.inflight} fail_rate={fail_rate:.2f} p95={p95}")
+            return
+
+        # Additive increase only after long stable window + minimum adjust interval
+        if (now_mono - vs.aimd.last_adjust_mono) < params["adjust_min_s"]:
+            return
+
+        stable_for = now_mono - vs.aimd.stable_since_mono
+        clean_latency = (p95 is None) or (p95 <= params["p95_lo"])
+        clean_fail = fail_rate < (float(params["fail_hi"]) / 2.0)
+
+        if stable_for >= params["stable_s"] and clean_latency and clean_fail:
+            old = vs.aimd.inflight
+            vs.aimd.inflight = min(vs.aimd.ceiling, vs.aimd.inflight + 1, vs.limits.max_workers, vs.limits.max_inflight)
+            vs.aimd.last_adjust_mono = now_mono
+            if vs.aimd.inflight != old:
+                print(f"<AIMD>: venue={vs.venue.name} increase old_inflight={old} new_inflight={vs.aimd.inflight} stable_for={stable_for:.0f}s p95={p95} fail_rate={fail_rate:.2f}")
 
     # -------------------------
     # Polling helpers
@@ -462,17 +552,12 @@ class MarketLogger:
             if poll_key is None:
                 continue
 
-            # Capture only what workers need (avoid races with snapshot reload)
             eligible.append(WorkItem(ikey=ikey, poll_key=str(poll_key), info=info, st=st))
 
-        # Cap inflight work so we don't overwhelm the venue
-        return eligible[: vs.limits.max_inflight]
+        return eligible[: self._current_inflight_limit(vs)]
 
     def _worker_fetch(self, client: Any, poll_key: str) -> tuple[bool, Any, int, Optional[int]]:
-        """
-        Worker function executed in a thread.
-        Returns: (ok, payload_or_exc, latency_ms, status_code)
-        """
+        """Worker: returns (ok, payload_or_exc, latency_ms, status_code)."""
         t0 = time.perf_counter()
         try:
             ob = client.get_orderbook(poll_key)
@@ -512,25 +597,28 @@ class MarketLogger:
             counters.other_errs += 1
 
     def _apply_backoff(self, st: dict, now_mono: float) -> int:
-        """
-        Apply exponential backoff with a 60s cap.
-        Returns backoff seconds (int).
-        """
-        backoff = min(60, 2 ** min(st["count"], 6))
+        """Apply exponential backoff with a 60s cap. Returns backoff seconds."""
+        backoff = min(60, 2 ** min(int(st["count"]), 6))
         st["next_ok"] = now_mono + backoff
         return int(backoff)
 
-    def _maybe_log_failure(self, vs: VenueState, w: WorkItem, exc: Exception, status_code: Optional[int], lat_ms: int, backoff: int, now_mono: float) -> None:
-        """
-        Keep console logs sparse but useful.
-        Also optionally sample errors to a JSONL error stream for later inspection.
-        """
+    def _maybe_log_failure(
+        self,
+        vs: VenueState,
+        w: WorkItem,
+        exc: Exception,
+        status_code: Optional[int],
+        lat_ms: int,
+        backoff: int,
+        now_mono: float,
+    ) -> None:
+        """Sparse console logs + optional sampled JSONL error stream."""
         vname = vs.venue.name
         slug = w.info.get("slug")
         mid = w.info.get("market_id")
 
-        # console log throttling
-        if w.st["count"] in (1, 3, 5) or (now_mono - w.st.get("last_log", 0.0) > 60):
+        last_log = float(w.st.get("last_log", 0.0))
+        if w.st["count"] in (1, 3, 5) or (now_mono - last_log > 60):
             print(
                 f"[WARN] get_orderbook failed "
                 f"venue={vname} ikey={w.ikey} mid={mid} slug={slug} "
@@ -539,9 +627,8 @@ class MarketLogger:
             )
             w.st["last_log"] = now_mono
 
-        # sampled error log (optional)
-        sample_every = getattr(settings, "POLL_ERROR_SAMPLE_EVERY", 0)  # 0 disables
-        if vs.errors_writer is not None and sample_every and (w.st["count"] % int(sample_every) == 0):
+        sample_every = int(getattr(settings, "POLL_ERROR_SAMPLE_EVERY", 0) or 0)
+        if vs.errors_writer is not None and sample_every > 0 and (w.st["count"] % sample_every == 0):
             vs.errors_writer.write({
                 "ts_utc": datetime.utcnow().isoformat(),
                 "ts_ms": int(datetime.now(tz=timezone.utc).timestamp() * 1000),
@@ -557,13 +644,7 @@ class MarketLogger:
             })
 
     def _build_record(self, vs: VenueState, w: WorkItem, raw_ob: dict) -> dict:
-        """
-        Build the record and enforce join-safe invariants at the write boundary.
-
-        IMPORTANT:
-        - normalizers may reshape payloads; writers must not drop fields
-        - only additive/corrective changes are allowed here
-        """
+        """Build record and enforce join-safe invariants at the write boundary."""
         v = vs.venue
         slug = w.info.get("slug")
         mid = w.info.get("market_id")
@@ -585,7 +666,6 @@ class MarketLogger:
 
         rec = v.normalizer(snap, full_orderbook=settings.FULL_ORDERBOOK) or snap
 
-        # --- Enforce join-safe invariants at write boundary ---
         rec.setdefault("venue", v.name)
 
         pk = rec.get("poll_key") or w.poll_key or slug
@@ -595,7 +675,6 @@ class MarketLogger:
             if rec.get("instrument_id") != canonical_id:
                 rec["instrument_id"] = canonical_id
 
-        # Optional numeric timestamp in ms (derive from ts_utc/timestamp; assume UTC if naive)
         if "ts_ms" not in rec:
             iso = rec.get("ts_utc") or rec.get("timestamp") or snap.get("timestamp")
             if iso:
@@ -606,9 +685,8 @@ class MarketLogger:
                         dt = dt.replace(tzinfo=timezone.utc)
                     rec["ts_ms"] = int(dt.timestamp() * 1000)
                 except Exception:
-                    pass  # never break logging due to timestamp parse issues
+                    pass
 
-        # Optional: venue-reported orderbook timestamp (ms since epoch)
         if "ob_ts_ms" not in rec:
             ob = rec.get("orderbook")
             if isinstance(ob, dict):
@@ -623,21 +701,23 @@ class MarketLogger:
         rec.setdefault("schema_version", settings.SCHEMA_VERSION_ORDERBOOK)
         return rec
 
-    def _write_stats_if_due(self, vs: VenueState, counters: PollCounters, now_mono: float) -> None:
-        """Write periodic per-venue polling stats to JSONL."""
+    def _write_stats_if_due(self, vs: VenueState, counters: PollCounters, now_mono: float) -> Optional[int]:
+        """Write periodic per-venue polling stats to JSONL. Returns p95 latency if written."""
         if vs.stats_writer is None:
-            return
+            return None
 
-        every = int(getattr(settings, "POLL_STATS_EVERY_SECONDS", 10))
+        every = int(getattr(settings, "POLL_STATS_EVERY_SECONDS", 10) or 10)
         if every <= 0:
-            return
+            return None
 
         if (now_mono - vs.stats_last_mono) < every:
-            return
+            return None
 
-        # p50/p95 latency from last ~500 samples
         lat_list = list(vs.lat_ms_buf)[-min(len(vs.lat_ms_buf), 500):]
         lat_list.sort()
+
+        p50 = _pct_from_sorted(lat_list, 0.50)
+        p95 = _pct_from_sorted(lat_list, 0.95)
 
         vs.stats_writer.write({
             "ts_utc": datetime.utcnow().isoformat(),
@@ -655,39 +735,34 @@ class MarketLogger:
             "timeouts": counters.timeouts,
             "other_errs": counters.other_errs,
 
-            "lat_p50_ms": _pct_from_sorted(lat_list, 0.50),
-            "lat_p95_ms": _pct_from_sorted(lat_list, 0.95),
+            "lat_p50_ms": p50,
+            "lat_p95_ms": p95,
 
             "cooldown_remaining_s": max(0.0, vs.cooldown_until - now_mono),
-            "max_inflight": vs.limits.max_inflight,
+            "max_inflight": self._current_inflight_limit(vs),
             "max_workers": vs.limits.max_workers,
+
+            "aimd_enabled": bool(vs.aimd is not None),
+            "aimd_inflight": (vs.aimd.inflight if vs.aimd else None),
+            "aimd_ceiling": (vs.aimd.ceiling if vs.aimd else None),
         })
 
         vs.stats_last_mono = now_mono
+        return p95
 
     # -------------------------
     # The poller loop (refactored, same semantics)
     # -------------------------
     def _poll_once(self, vs: VenueState, now_mono: float) -> tuple[int, int]:
-        """
-        Poll all active instruments once for one venue, in parallel.
-
-        Only the network fetch is parallelized.
-        All state mutation (fail_state, cooldown, writes) remains single-threaded.
-        """
-        # Honor per-venue cooldown without blocking other venues
+        """Poll all active instruments once for one venue, in parallel (network only)."""
         if now_mono < vs.cooldown_until:
             return (0, 0)
 
         counters = PollCounters()
 
-        # 1) Select eligible instruments
         eligible = self._select_eligible(vs, now_mono=now_mono)
-
-        # 2) Submit fetch jobs
         futures = self._submit_fetches(vs, eligible, counters=counters)
 
-        # 3) Collect results
         for fut in as_completed(futures):
             w = futures[fut]
             ok, payload, lat_ms, status_code = fut.result()
@@ -696,11 +771,9 @@ class MarketLogger:
             if ok:
                 raw_ob = payload
 
-                # success: reset failure state
                 vs.fail_state[w.ikey] = {"count": 0, "next_ok": 0.0, "last_log": 0.0}
                 counters.successes += 1
 
-                # build + write record (main thread)
                 rec = self._build_record(vs, w, raw_ob)
                 vs.books_writer.write(rec)
 
@@ -708,26 +781,18 @@ class MarketLogger:
                 exc: Exception = payload
                 counters.failures += 1
 
-                # update failure state
                 w.st["count"] = int(w.st.get("count", 0)) + 1
-
                 self._classify_failure(exc, status_code, counters)
 
-                # immediate cooldown on 429
                 if status_code == 429:
                     self._cooldown_on_429(vs, now_mono)
 
-                # apply per-instrument backoff (unchanged logic)
                 backoff = self._apply_backoff(w.st, now_mono)
-
-                # sparse logging + optional sampling to JSONL
                 self._maybe_log_failure(vs, w, exc, status_code, lat_ms, backoff, now_mono)
-
-                # persist updated fail state
                 vs.fail_state[w.ikey] = w.st
 
-        # 4) Periodic stats logging
-        self._write_stats_if_due(vs, counters, now_mono=now_mono)
+        p95 = self._write_stats_if_due(vs, counters, now_mono=now_mono)
+        self._maybe_adjust_aimd(vs, counters, now_mono=now_mono)
 
         return (counters.successes, counters.failures)
 
@@ -741,7 +806,6 @@ class MarketLogger:
             while True:
                 now_mono = time.monotonic()
 
-                # deterministic order for predictable logs
                 for vname in sorted(venue_state.keys()):
                     vs = venue_state[vname]
 
@@ -751,7 +815,8 @@ class MarketLogger:
                     successes, failures = self._poll_once(vs, now_mono=now_mono)
                     print(
                         f"<PollApp>: venue={vs.venue.name} "
-                        f"saved={successes} failed={failures} total={successes + failures}"
+                        f"saved={successes} failed={failures} total={successes + failures} "
+                        f"inflight={self._current_inflight_limit(vs)}"
                     )
 
                     self._maybe_apply_cooldown(vs, successes=successes, failures=failures, now_mono=now_mono)
@@ -761,6 +826,5 @@ class MarketLogger:
         except KeyboardInterrupt:
             print("<PollApp>: shutdown requested (KeyboardInterrupt)")
         finally:
-            # Best-effort cleanup
-            for _, vs in venue_state.items():
+            for vs in venue_state.values():
                 self._close_venue_state(vs)
