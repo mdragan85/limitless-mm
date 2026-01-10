@@ -7,7 +7,7 @@ DEST_ROOT = Path("/Users/maciejdragan/Python VSCode Projects/limitless_mm/limitl
 
 # ---- CONFIG ----
 # Copy files modified AFTER this date
-CUTOFF_DATE = datetime(2026, 1, 6)
+CUTOFF_DATE = datetime(2026, 1, 8)
 # ----------------
 
 cutoff_ts = CUTOFF_DATE.timestamp()
