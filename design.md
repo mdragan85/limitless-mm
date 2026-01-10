@@ -1,6 +1,6 @@
 # Market Data Collector – Design Notes
 
-> Last updated: 2026-01-07 — Deterministic Polymarket crypto discovery, sticky polling semantics, and change-driven snapshots
+> Last updated: 2026-01-10 — Thread-safe, bounded-parallel polling with deterministic backoff and 1 Hz-class throughput
 
 ## Architecture Overview
 
@@ -17,6 +17,7 @@ The system is intentionally split into two responsibilities:
   - Runs a tight loop polling order books for the current active set
   - Never blocks on discovery
   - Applies per-instrument backoff and per-venue cooldown
+  - Fetches order books **in bounded parallel**
   - Writes normalized JSONL order book snapshots with time-based rotation
 
 ## Core Components
@@ -26,9 +27,9 @@ The system is intentionally split into two responsibilities:
 A **multi-venue polling service**.
 
 Responsibilities:
-- Load per-venue snapshots from discovery (`active_instruments.snapshot.json`)
+- Load per-venue snapshots from discovery (`state/active_instruments.snapshot.json`)
 - Maintain an in-memory dictionary of active instruments (poller-owned, non-persistent)
-- Maintain in-memory backoff per instrument and cooldown per venue
+- Maintain in-memory **backoff per instrument** and **cooldown per venue**
 - Poll order books using the venue client and an opaque `poll_key`
 - Write JSONL logs under rotating directories
 
@@ -44,47 +45,23 @@ Key properties:
 - Order book logs may span multiple files per day; ordering is by record timestamp
 - Instruments are **sticky until expiration**
 
-### DiscoveryService (Discovery)
+## High-Throughput Polling Model (2026-01 Upgrade)
 
-A **multi-venue discovery runner**.
+Only the **blocking HTTP fetch** is parallelized using per-venue ThreadPoolExecutors. All state mutation, normalization, and file writes remain single-threaded and deterministic.
 
-Responsibilities:
-- Run `discover_fn` for each venue on a slower cadence
-- Discover the full active set of instruments for the venue on each run
-- Derive and enforce a stable `instrument_key` per instrument
-- Write:
-  - `state/active_instruments.snapshot.json` (atomic overwrite)
-  - `markets/` JSONL logs **only when the active set changes**
+## Thread-Safe Venue Clients
 
-Notes:
-- Discovery is the sole owner of membership determination
-- No active state is persisted beyond the snapshot file
+- **Polymarket** uses a thread-local `httpx.Client`
+- **Limitless** uses a thread-local `requests.Session`
 
-## Venue-Specific Discovery Semantics
+This prevents connection pool corruption while preserving discovery behavior.
 
-### Polymarket
+## Persistence & Durability
 
-- Deterministic crypto discovery via `GET /markets` pagination
-- Hard filters: `enableOrderBook`, `acceptingOrders`, not `closed`, not `archived`
-- Two instruments per market (YES / NO CLOBs)
-- Instruments remain active until expiration passes
-
-### Limitless
-
-- One instrument per CLOB market
-- AMM markets excluded
-- Funded and tradable markets only
+JSONL is used as the append-only source-of-truth. Writers use periodic fsync for durability; per-record flush was removed to enable high throughput.
 
 ## Persistence Layout
-
-For each venue under `OUTPUT_DIR`:
 
 - `orderbooks/date=YYYY-MM-DD/`
 - `markets/date=YYYY-MM-DD/`
 - `state/active_instruments.snapshot.json`
-
-## Market Metadata Index
-
-Market and instrument metadata is indexed by **MarketCatalog**.
-
-See: `docs/market_catalog.md`

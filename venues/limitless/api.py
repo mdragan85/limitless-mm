@@ -7,10 +7,13 @@ import requests
 from typing import Any, Dict, List, Optional
 import httpx
 from .market import LimitlessMarket
+import threading
 
 from config.settings import settings
 
-TIMEOUT = 10
+
+TIMEOUT = settings.ORDERBOOK_TIMEOUT_LIMITLESS
+
 
 class LimitlessAPI:
     """
@@ -22,7 +25,10 @@ class LimitlessAPI:
 
     def __init__(self):
         self.base_url = "https://api.limitless.exchange"
-        self.session = requests.Session()          # <-- REQUIRED
+
+        # Thread-local storage so each worker thread has its own requests.Session.
+        # This avoids unsafe sharing of connection pools under multithreading.
+        self._tls = threading.local()
 
         # Build headers dynamically based on whether API key exists
         headers = {
@@ -33,12 +39,26 @@ class LimitlessAPI:
 
         self._headers = headers
 
+    def _session(self) -> requests.Session:
+        """
+        Return a per-thread requests.Session.
+
+        Why:
+        - requests.Session is not safe to share across threads.
+        - We want connection reuse without cross-thread corruption.
+        """
+        s = getattr(self._tls, "session", None)
+        if s is None:
+            s = requests.Session()
+            self._tls.session = s
+        return s
+
     # -------------------------
     # Low-level request helper
     # -------------------------
     def _get(self, path: str, params: dict | None = None):
         url = f"{self.base_url}/{path.lstrip('/')}"
-        resp = self.session.get(url, headers=self._headers, params=params, timeout=TIMEOUT)
+        resp = self._session().get(url, headers=self._headers, params=params, timeout=TIMEOUT)
 
         try:
             resp.raise_for_status()
@@ -122,7 +142,10 @@ class LimitlessAPI:
     # Cleanup
     # -------------------------
     def close(self):
-        self.session.close()
+        s = getattr(self._tls, "session", None)
+        if s is not None:
+            s.close()
+            self._tls.session = None
 
     def __enter__(self):
         return self

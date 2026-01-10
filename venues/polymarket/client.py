@@ -1,7 +1,9 @@
 import json
 from datetime import datetime, timezone
 import httpx
+import threading
 
+from config.settings import settings
 
 PUBIC_SEARCH_LIMIT = 1000
 GAMMA_BASE = "https://gamma-api.polymarket.com"
@@ -11,8 +13,41 @@ CLOB_BASE = "https://clob.polymarket.com"
 class PolymarketClient:
     venue = "polymarket"
 
-    def __init__(self, timeout: float = 10.0):
-        self.http = httpx.Client(timeout=timeout)
+    def __init__(self, timeout: float | None = None):
+        # Keep the same default timeout to avoid changing behavior yet.
+        # We'll tune this later once concurrency is in.
+        if timeout is None:
+            timeout = settings.ORDERBOOK_TIMEOUT_POLY
+        self._timeout = timeout
+
+        # Thread-local storage so each worker thread has its own httpx.Client.
+        # This avoids shared connection pool issues under multithreading.
+        self._tls = threading.local()
+
+    def _http(self) -> httpx.Client:
+        """
+        Return a per-thread httpx.Client instance.
+
+        Why:
+        - When we add a ThreadPool, concurrent calls to a single shared httpx.Client
+        can cause connection pool contention or subtle bugs.
+        - Thread-local clients preserve behavior while making polling concurrency-safe.
+        """
+        c = getattr(self._tls, "client", None)
+        if c is None:
+            c = httpx.Client(timeout=self._timeout)
+            self._tls.client = c
+        return c
+
+    @property
+    def http(self) -> httpx.Client:
+        """
+        Backwards-compatible access for code that expects `self.http.get(...)`.
+
+        Also thread-safe: returns a per-thread httpx.Client.
+        """
+        return self._http()
+
 
     # ---------- Low-level API ----------
     def _gamma_get(self, path: str, params: dict | None = None):
@@ -430,7 +465,17 @@ class PolymarketClient:
         resp.raise_for_status()
         return resp.json()
 
-
+    def close(self) -> None:
+        """
+        Best-effort cleanup: close this thread's client if it exists.
+        Note: other threads will have their own clients.
+        """
+        c = getattr(self._tls, "client", None)
+        if c is not None:
+            try:
+                c.close()
+            finally:
+                self._tls.client = None
 
 # -------------------------------------------------------------
 # DEBUG: dump discovered instruments (market-level view)

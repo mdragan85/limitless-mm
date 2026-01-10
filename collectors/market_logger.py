@@ -12,6 +12,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pathlib import Path
 
@@ -98,6 +99,10 @@ class MarketLogger:
                 # Failure/backoff + cooldown (monotonic time)
                 "fail_state": {},
                 "cooldown_until": 0.0,
+
+                # --- NEW: per-venue thread pool for orderbook fetch ---
+                "executor": ThreadPoolExecutor(max_workers=settings.POLL_MAX_WORKERS),   # start conservative
+                "max_inflight": settings.POLL_MAX_INFLIGHT,
             }
 
         return venue_state
@@ -234,13 +239,12 @@ class MarketLogger:
                 f"{type(exc).__name__}: {exc}"
             )
 
-
     def _poll_once(self, vs: dict, now_mono: float) -> tuple[int, int]:
         """
-        Poll all active instruments once for one venue.
-        Returns (successes, failures).
+        Poll all active instruments once for one venue, in parallel.
 
-        Uses monotonic time for backoff/cooldown to avoid issues with system clock jumps.
+        Only the network fetch is parallelized.
+        All state mutation (fail_state, cooldown, writes) remains single-threaded.
         """
         # Honor per-venue cooldown without blocking other venues
         if now_mono < vs["cooldown_until"]:
@@ -250,22 +254,51 @@ class MarketLogger:
         active = vs["active"]
         fail_state = vs["fail_state"]
         books_writer = vs["books_writer"]
+        executor = vs["executor"]
+        max_inflight = vs["max_inflight"]
 
         loop_failures = 0
         loop_successes = 0
 
+        # -------------------------------
+        # 1) Select eligible instruments
+        # -------------------------------
+        eligible = []
         for ikey, info in active.items():
             st = fail_state.get(ikey, {"count": 0, "next_ok": 0.0, "last_log": 0.0})
             if now_mono < st["next_ok"]:
                 continue
 
+            # Capture only what workers need (avoid races with snapshot reload)
+            eligible.append((
+                ikey,
+                info.get("poll_key"),
+                info,
+                st,
+            ))
+
+        # Cap inflight work so we don't overwhelm the venue
+        eligible = eligible[:max_inflight]
+
+        # -------------------------------
+        # 2) Submit fetch jobs
+        # -------------------------------
+        futures = {}
+        for ikey, poll_key, info, st in eligible:
+            fut = executor.submit(v.client.get_orderbook, poll_key)
+            futures[fut] = (ikey, poll_key, info, st)
+
+        # -------------------------------
+        # 3) Collect results
+        # -------------------------------
+        for fut in as_completed(futures):
+            ikey, poll_key, info, st = futures[fut]
             slug = info.get("slug")
             mid = info.get("market_id")
 
             try:
-                poll_key = info["poll_key"]
-                raw_ob = v.client.get_orderbook(poll_key)
-
+                raw_ob = fut.result()
+                # success: reset failure state
                 fail_state[ikey] = {"count": 0, "next_ok": 0.0, "last_log": 0.0}
                 loop_successes += 1
 
@@ -288,6 +321,9 @@ class MarketLogger:
                 fail_state[ikey] = st
                 continue
 
+            # -------------------------------
+            # 4) Build + write record (main thread)
+            # -------------------------------
             snap = {
                 "timestamp": datetime.utcnow().isoformat(),
                 "snapshot_asof": vs.get("snapshot_asof"),
@@ -300,23 +336,21 @@ class MarketLogger:
                 "instrument_key": ikey,
                 "instrument_id": info.get("instrument_id"),
                 "venue": v.name,
-                "poll_key": info.get("poll_key"),
+                "poll_key": poll_key,
             }
 
             rec = v.normalizer(snap, full_orderbook=settings.FULL_ORDERBOOK) or snap
 
-            # --- Enforce join-safe invariants at write boundary (non-semantic, minimal) ---
+            # --- Enforce join-safe invariants at write boundary ---
             rec.setdefault("venue", v.name)
 
-            # Prefer an existing poll_key, otherwise fall back to snapshot info (which already has poll_key)
-            pk = rec.get("poll_key") or info.get("poll_key") or slug
+            pk = rec.get("poll_key") or poll_key or slug
             if pk is not None:
                 rec.setdefault("poll_key", pk)
                 canonical_id = f"{v.name}:{pk}"
                 if rec.get("instrument_id") != canonical_id:
                     rec["instrument_id"] = canonical_id
 
-            # Optional numeric timestamp in ms (derive from ts_utc / timestamp; assume UTC if naive)
             if "ts_ms" not in rec:
                 iso = rec.get("ts_utc") or rec.get("timestamp") or snap.get("timestamp")
                 if iso:
@@ -327,12 +361,8 @@ class MarketLogger:
                             dt = dt.replace(tzinfo=timezone.utc)
                         rec["ts_ms"] = int(dt.timestamp() * 1000)
                     except Exception:
-                        # Never break logging due to timestamp parse issues
                         pass
-            # ---------------------------------------------------------------------------
 
-            # --- Optional: venue-reported orderbook timestamp (ms since epoch) ---
-            # Polymarket includes orderbook.timestamp (string epoch ms). Limitless does not.
             if "ob_ts_ms" not in rec:
                 ob = rec.get("orderbook")
                 if isinstance(ob, dict):
@@ -343,18 +373,6 @@ class MarketLogger:
                         except Exception:
                             pass
 
-            # ---------------------------------------------------------------------------
-            # Write-boundary record contract enforcement
-            #
-            # This is the final choke point before data hits disk.
-            # We enforce system-level invariants here so that:
-            #   - all orderbook records are join-safe across venues
-            #   - timestamps have clear semantics (collector vs venue time)
-            #   - downstream readers can tolerate schema drift safely
-            #
-            # Normalizers may reshape payloads and drop fields; writers must not.
-            # Only additive / corrective changes are allowed here (no market semantics).
-            # ---------------------------------------------------------------------------          
             rec.setdefault("record_type", "orderbook")
             rec.setdefault("schema_version", settings.SCHEMA_VERSION_ORDERBOOK)
 
@@ -410,6 +428,13 @@ class MarketLogger:
         finally:
             # Best-effort cleanup
             for vname, vs in venue_state.items():
+                try:
+                    ex = vs.get("executor")
+                    if ex is not None:
+                        ex.shutdown(wait=False)
+                except Exception:
+                    pass
+
                 try:
                     bw = vs.get("books_writer")
                     if bw is not None:

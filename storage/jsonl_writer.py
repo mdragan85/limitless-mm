@@ -101,8 +101,13 @@ class JsonlRotatingWriter:
 
         Performs:
         - Time-based file rotation
-        - Line-buffered write + flush
-        - Periodic fsync for durability
+        - Buffered write (no per-record flush)
+        - Periodic flush + fsync for durability (bounded loss window)
+
+        Why this change:
+        - Per-record flush is extremely expensive and caps throughput.
+        - You already fsync every N seconds, which defines your durability window.
+        - Flushing only when we fsync preserves safety while improving speed.
         """
         now = time.time()
 
@@ -110,12 +115,13 @@ class JsonlRotatingWriter:
         if now - self.opened_at > self.rotate_seconds:
             self._open_new()
 
-        # Write one JSON object per line
+        # Write one JSON object per line (buffered)
         self.fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-        self.fh.flush()
 
-        # Force data to disk periodically (not on every write)
+        # Force data to disk periodically (not on every write).
+        # We flush BEFORE fsync so the OS sees the latest bytes.
         if now - self.last_fsync > self.fsync_seconds:
+            self.fh.flush()
             os.fsync(self.fh.fileno())
             self.last_fsync = now
 
