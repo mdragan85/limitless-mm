@@ -66,26 +66,26 @@ class AppSettings:
     POLL_STATS_EVERY_SECONDS: int = 10
     POLL_ERROR_SAMPLE_EVERY: int = 3  # 0 disables; 3 logs every 3rd failure per instrument
 
-    # AIMD behavior (start, then slowly probe upward)
-    AIMD_START_INFLIGHT: int = 4
+    AIMD_ENABLED: bool = True                    # If True, dynamically adjusts per-venue inflight to find max sustainable throughput
+    AIMD_START_INFLIGHT: int = 4                 # Starting inflight per venue after launch (AIMD will ramp from here)
 
-    # Per-venue ceilings (hard caps)
-    AIMD_INFLIGHT_CEILING_POLY: int = 32
-    AIMD_INFLIGHT_CEILING_LIMITLESS: int = 4
+    # Hard ceilings so AIMD never exceeds what you consider safe
+    AIMD_INFLIGHT_CEILING_POLY: int = 32         # Absolute max inflight Polymarket is allowed to reach
+    AIMD_INFLIGHT_CEILING_LIMITLESS: int = 4     # Absolute max inflight Limitless is allowed to reach (recommend low)
 
-    # Polymarket AIMD thresholds
-    AIMD_STABLE_SECONDS_POLY: int = 300
-    AIMD_ADJUST_MIN_SECONDS_POLY: int = 60
-    AIMD_LAT_P95_HIGH_MS_POLY: int = 1500
-    AIMD_LAT_P95_LOW_MS_POLY: int = 800
-    AIMD_FAIL_RATE_HIGH_POLY: float = 0.25
+    # --- Polymarket AIMD tuning ---
+    AIMD_STABLE_SECONDS_POLY: int = 300          # Needs this many seconds of “stable” behavior before increasing inflight
+    AIMD_ADJUST_MIN_SECONDS_POLY: int = 60       # Minimum time between AIMD adjustments (prevents oscillation)
+    AIMD_LAT_P95_HIGH_MS_POLY: int = 1500        # If p95 latency exceeds this, treat as congestion and decrease inflight
+    AIMD_LAT_P95_LOW_MS_POLY: int = 800          # If p95 latency is below this *and* failures low, consider increasing inflight
+    AIMD_FAIL_RATE_HIGH_POLY: float = 0.25       # If failures/requests exceeds this, treat as congestion and decrease inflight
 
-    # Limitless AIMD thresholds (more conservative)
-    AIMD_STABLE_SECONDS_LIMITLESS: int = 600
-    AIMD_ADJUST_MIN_SECONDS_LIMITLESS: int = 120
-    AIMD_LAT_P95_HIGH_MS_LIMITLESS: int = 2000
-    AIMD_LAT_P95_LOW_MS_LIMITLESS: int = 1000
-    AIMD_FAIL_RATE_HIGH_LIMITLESS: float = 0.20
+    # --- Limitless AIMD tuning (more conservative) ---
+    AIMD_STABLE_SECONDS_LIMITLESS: int = 600     # Longer stability window before probing upward (Limitless rate limits feel harsher)
+    AIMD_ADJUST_MIN_SECONDS_LIMITLESS: int = 120 # Slow adjustments to avoid triggering bans
+    AIMD_LAT_P95_HIGH_MS_LIMITLESS: int = 2000   # High latency threshold for decreasing inflight on Limitless
+    AIMD_LAT_P95_LOW_MS_LIMITLESS: int = 1000    # Low latency threshold for increasing inflight on Limitless
+    AIMD_FAIL_RATE_HIGH_LIMITLESS: float = 0.20  # Fail-rate threshold for decreasing inflight on Limitless
 
 
 
