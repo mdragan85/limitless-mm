@@ -127,3 +127,129 @@ They allow post-hoc analysis of:
 - network issues
 - mis-tuned concurrency
 
+## Adaptive Polling & Rate‑Limit Control (AIMD)
+
+### Motivation
+
+Empirical testing showed that both **Polymarket** and **Limitless** apply opaque,
+IP‑based rate limits that vary by venue, time, and burstiness. Static concurrency
+settings required frequent manual tuning and led to repeated 429 throttling.
+
+The poller therefore implements **adaptive, self‑calibrating throttling** whose goal is:
+
+> **Maximum sustainable throughput with near‑zero 429s**
+
+Not peak throughput.
+
+---
+
+### Design Overview
+
+Adaptive throttling is implemented using **AIMD (Additive Increase, Multiplicative Decrease)**,
+the same control strategy used by TCP congestion control.
+
+Key properties:
+
+- **Per‑venue isolation**  
+  Each venue independently adapts its own inflight limit. Polymarket may ramp up while
+  Limitless remains conservative.
+
+- **Single control variable**  
+  Only `inflight` concurrency is adapted at runtime. Thread pool size remains fixed.
+
+- **Fast backoff, slow probing**  
+  - Any observed HTTP 429 → immediate cooldown + inflight halved  
+  - Sustained stability → inflight increases slowly (one unit at a time)
+
+- **Stateless across restarts**  
+  No persistent calibration state is stored. Each process starts conservatively
+  and re‑learns safely.
+
+---
+
+### Control Signals
+
+The AIMD controller uses the following runtime telemetry:
+
+- **HTTP 429 count** (primary congestion signal)
+- **Failure rate** (secondary congestion signal)
+- **p95 request latency** (early congestion indicator)
+
+All signals are collected per venue.
+
+---
+
+### Adjustment Rules (Simplified)
+
+**Multiplicative Decrease**
+- If *any* HTTP 429 occurs:
+  - `inflight = max(1, inflight // 2)`
+  - Apply per‑venue cooldown
+  - Reset stability window
+
+**Additive Increase**
+- If *all* conditions hold:
+  - No 429s for `AIMD_STABLE_SECONDS_*`
+  - Failure rate < ½ failure threshold
+  - p95 latency < low‑latency threshold
+  - Minimum adjustment interval elapsed
+- Then:
+  - `inflight += 1` (up to configured ceiling)
+
+**Gentle Decrease**
+- If failure rate or p95 latency exceeds high threshold (without 429):
+  - `inflight -= 1`
+
+---
+
+### Safety Constraints
+
+- Hard per‑venue ceilings prevent runaway concurrency.
+- Cooldowns prevent hammering during partial outages.
+- All state mutation remains single‑threaded.
+- Network fetches are the *only* parallelized section.
+
+---
+
+### Observability
+
+The poller emits structured telemetry for post‑hoc analysis:
+
+- `poll_stats/` JSONL  
+  - successes, failures, HTTP error counts
+  - p50 / p95 latency
+  - cooldown remaining
+  - current inflight limit
+
+- `poll_errors/` JSONL (sampled)
+  - status code
+  - latency
+  - error type and message
+
+These streams allow offline inspection of rate‑limit behavior
+and verification that the system converges to a stable operating point.
+
+---
+
+### Rationale for JSONL Retention
+
+Despite high event rates, JSONL remains sufficient because:
+
+- Orderbook records are append‑only
+- No strict global ordering is required
+- Compression and columnar formats (e.g., Parquet) can be applied downstream
+- Debuggability and recovery are superior during active development
+
+Parquet remains a future optimization once schemas and access patterns stabilize.
+
+---
+
+### Summary
+
+This adaptive design replaces manual tuning with a deterministic,
+well‑understood control loop that:
+
+- Maximizes sustainable throughput
+- Avoids bans and prolonged throttling
+- Preserves debuggability and safety
+- Scales naturally as venues or market counts change
