@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 from datetime import datetime, timezone
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Optional, Sequence, Tuple, List, Dict, Literal
+from typing import Any, Callable, Iterable, Optional, Sequence, Tuple, List, Dict, Literal, Union
 
 from .catalog import MarketCatalog, InstrumentMeta
 
@@ -121,6 +121,34 @@ class InstrumentQuery:
         if not uset:
             return self
         return InstrumentQuery(tuple(i for i in self._items if (i.underlying or "").upper() in uset))
+
+    def expires_before(
+        self,
+        cutoff_utc: Union[datetime, str],
+    ):
+        """
+        Filter instruments expiring before a UTC cutoff.
+
+        Parameters
+        ----------
+        cutoff_utc :
+            - datetime (must be timezone-aware, UTC), or
+            - ISO-8601 string interpreted as UTC (e.g. "2026-01-08T16:00:00Z")
+        """
+        if isinstance(cutoff_utc, str):
+            # Accept ISO-8601 strings; force UTC
+            dt = datetime.fromisoformat(cutoff_utc.replace("Z", "+00:00"))
+        elif isinstance(cutoff_utc, datetime):
+            dt = cutoff_utc
+        else:
+            raise TypeError("cutoff_utc must be datetime or ISO-8601 string")
+
+        if dt.tzinfo is None:
+            raise ValueError("cutoff_utc must be timezone-aware (UTC)")
+
+        cutoff_ms = int(dt.astimezone(timezone.utc).timestamp() * 1000)
+
+        return self.filter(lambda i: i.expiration_ms < cutoff_ms)
 
     def where(self, **attrs: Any) -> "InstrumentQuery":
         """
